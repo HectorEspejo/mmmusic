@@ -72,6 +72,7 @@ pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
         KeyCode::Char(caracter) => match caracter {
             'q' => Some(Accion::Salir),
             '1'..='6' => Vista::desde_numero(caracter as usize - '0' as usize).map(Accion::IrA),
+            '7' => Some(Accion::IrA(Vista::Visual)),
             '?' => Some(Accion::Ayuda),
             'c' => Some(Accion::AlternarCola),
             't' => Some(Accion::RecargarTema),
@@ -158,7 +159,10 @@ mod pruebas {
             traducir(&tecla(KeyCode::Char('4'))),
             Some(Accion::IrA(Vista::Albumes))
         );
-        assert_eq!(traducir(&tecla(KeyCode::Char('7'))), None);
+        assert_eq!(
+            traducir(&tecla(KeyCode::Char('7'))),
+            Some(Accion::IrA(Vista::Visual))
+        );
         assert_eq!(traducir(&tecla(KeyCode::Char('?'))), Some(Accion::Ayuda));
     }
 

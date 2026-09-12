@@ -1,9 +1,11 @@
 use std::collections::HashSet;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
-use tracing::info;
+use tracing::{info, warn};
 
+use super::escaner;
 use super::{bd, etiquetas};
 
 pub const ARTISTA_VARIOS: &str = "Varios artistas";
@@ -23,6 +25,7 @@ struct PistaGrupo {
     anio: Option<i64>,
     caratula_ruta: Option<String>,
     varios_artistas: bool,
+    ruta: String,
 }
 
 pub fn grupos_candidatos(conn: &Connection) -> Result<Vec<GrupoCandidato>> {
@@ -45,7 +48,11 @@ pub fn grupos_candidatos(conn: &Connection) -> Result<Vec<GrupoCandidato>> {
         .context("no se pudieron leer los grupos de recopilatorios")
 }
 
-pub fn consolidar(conn: &Connection, grupos: &[GrupoCandidato]) -> Result<()> {
+pub fn consolidar(
+    conn: &Connection,
+    grupos: &[GrupoCandidato],
+    releidas: &HashSet<String>,
+) -> Result<()> {
     let mut convertidos = 0usize;
     let mut revertidos = 0usize;
     for grupo in grupos {
@@ -60,7 +67,7 @@ pub fn consolidar(conn: &Connection, grupos: &[GrupoCandidato]) -> Result<()> {
                 convertidos += 1;
             }
         } else if pistas.iter().any(|pista| pista.varios_artistas)
-            && revertir_a_albumes_normales(conn, &pistas)?
+            && revertir_a_albumes_normales(conn, &pistas, releidas)?
         {
             revertidos += 1;
         }
@@ -75,7 +82,8 @@ fn pistas_del_grupo(conn: &Connection, grupo: &GrupoCandidato) -> Result<Vec<Pis
     let mut sentencia = conn
         .prepare(
             "SELECT p.id, p.artista_id, p.album_id, p.artista_album_etiquetado,
-                    al.titulo, al.anio, al.caratula_ruta, al.varios_artistas
+                    al.titulo, al.anio, al.caratula_ruta, al.varios_artistas,
+                    p.ruta
                FROM PISTAS p
                JOIN ALBUMES al ON al.id = p.album_id
               WHERE p.carpeta = ?1 AND al.titulo_norm = ?2",
@@ -92,6 +100,7 @@ fn pistas_del_grupo(conn: &Connection, grupo: &GrupoCandidato) -> Result<Vec<Pis
                 anio: fila.get(5)?,
                 caratula_ruta: fila.get(6)?,
                 varios_artistas: fila.get(7)?,
+                ruta: fila.get(8)?,
             })
         })
         .context("no se pudieron listar las pistas del grupo")?
@@ -150,20 +159,82 @@ fn mover_a_varios_artistas(
     Ok(movidas)
 }
 
-fn revertir_a_albumes_normales(conn: &Connection, pistas: &[PistaGrupo]) -> Result<bool> {
+fn revertir_a_albumes_normales(
+    conn: &Connection,
+    pistas: &[PistaGrupo],
+    releidas: &HashSet<String>,
+) -> Result<bool> {
     let mut movidas = false;
     for pista in pistas.iter().filter(|pista| pista.varios_artistas) {
-        let album_id = asegurar_album_normal(conn, pista)?;
-        if pista.album_id != album_id {
+        let destino = album_normal_para_pista(conn, pista, releidas)?;
+        if pista.album_id != destino.album_id
+            || pista.artista_id != destino.artista_id
+            || pista.etiquetado != destino.etiquetado
+        {
             conn.execute(
-                "UPDATE PISTAS SET album_id = ?1 WHERE id = ?2",
-                params![album_id, pista.id],
+                "UPDATE PISTAS
+                    SET album_id = ?1, artista_id = ?2, artista_album_etiquetado = ?3
+                  WHERE id = ?4",
+                params![
+                    destino.album_id,
+                    destino.artista_id,
+                    i64::from(destino.etiquetado),
+                    pista.id
+                ],
             )
             .with_context(|| format!("no se pudo devolver la pista {}", pista.id))?;
             movidas = true;
         }
     }
     Ok(movidas)
+}
+
+struct AlbumDestino {
+    artista_id: i64,
+    album_id: i64,
+    etiquetado: bool,
+}
+
+fn album_normal_para_pista(
+    conn: &Connection,
+    pista: &PistaGrupo,
+    releidas: &HashSet<String>,
+) -> Result<AlbumDestino> {
+    if !releidas.contains(&pista.ruta) {
+        match releer_etiquetas(conn, pista) {
+            Ok(Some(destino)) => return Ok(destino),
+            Ok(None) => {}
+            Err(error) => {
+                warn!(
+                    ruta = %pista.ruta,
+                    "no se pudieron releer las etiquetas al revertir el recopilatorio: {error:#}"
+                );
+            }
+        }
+    }
+    let album_id = asegurar_album_normal(conn, pista)?;
+    Ok(AlbumDestino {
+        artista_id: pista.artista_id,
+        album_id,
+        etiquetado: pista.etiquetado,
+    })
+}
+
+fn releer_etiquetas(conn: &Connection, pista: &PistaGrupo) -> Result<Option<AlbumDestino>> {
+    let ruta = Path::new(&pista.ruta);
+    if !ruta.exists() {
+        return Ok(None);
+    }
+    let crudas = etiquetas::leer(ruta)?;
+    let etiquetas = etiquetas::resolver(crudas, ruta);
+    let artista_id = escaner::asegurar_artista(conn, &etiquetas.artista)?;
+    let album_artista_id = escaner::asegurar_artista(conn, &etiquetas.album_artista)?;
+    let album_id = escaner::asegurar_album(conn, album_artista_id, &etiquetas)?;
+    Ok(Some(AlbumDestino {
+        artista_id,
+        album_id,
+        etiquetado: etiquetas.album_artista_etiquetado,
+    }))
 }
 
 fn asegurar_album_normal(conn: &Connection, pista: &PistaGrupo) -> Result<i64> {

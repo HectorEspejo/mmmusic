@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::layout::Rect;
-use rusqlite::Connection;
-
+use crate::audio::anillo::Anillo;
+use crate::audio::{Analisis, Analizador, EstadoCaptura};
 use crate::biblioteca::consultas;
 use crate::biblioteca::consultas::{LIMITE_BUSQUEDA, ResultadosBusqueda};
 use crate::biblioteca::consultas::{OrdenAlbumes, OrdenPistas};
@@ -15,7 +14,7 @@ use crate::biblioteca::modelos::{
     AlbumResumen, ArtistaResumen, DetalleAlbum, DetalleArtista, Inicio, PistaListado,
     PlaylistResumen,
 };
-use crate::config::Config;
+use crate::config::{Config, FuentePaleta, ModoIconos};
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use crate::reproductor::estado::{Estado, EstadoReproduccion};
 use crate::reproductor::{ComandoReproductor, ManejoReproductor};
@@ -24,10 +23,23 @@ use crate::scrobbling::{ComandoScrobbling, ManejoScrobbling};
 use crate::tema::{self, Paleta};
 use crate::ui::Iconos;
 use crate::ui::componentes::imagen::CacheCaratulas;
+use crate::ui::inactividad::Inactividad;
 use crate::ui::teclas::{Accion, traducir};
+use crate::visuales;
+use crate::visuales::paleta::Paleta as PaletaVisual;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+use rusqlite::Connection;
+use tokio::sync::watch;
 
 const DURACION_TOAST: Duration = Duration::from_secs(3);
 const PAGINA_SALTOS: usize = 10;
+const TICK_BASE: Duration = Duration::from_millis(250);
+const TICK_DEGRADADO: Duration = Duration::from_millis(66);
+const DURACION_CABECERA: Duration = Duration::from_secs(3);
+const DURACION_TRANSICION_PALETA: f32 = 0.4;
+const UMBRAL_FRAME_LENTO: Duration = Duration::from_millis(33);
+const MARGEN_RECUPERACION: Duration = Duration::from_secs(10);
 pub const PLAYLIST_FAVORITAS: i64 = -1;
 pub const NOMBRE_FAVORITAS: &str = "♥ Favoritas";
 
@@ -39,16 +51,18 @@ pub enum Vista {
     Albumes,
     Pistas,
     Playlists,
+    Visual,
 }
 
 impl Vista {
-    pub const TODAS: [Vista; 6] = [
+    pub const TODAS: [Vista; 7] = [
         Vista::Inicio,
         Vista::Buscar,
         Vista::Artistas,
         Vista::Albumes,
         Vista::Pistas,
         Vista::Playlists,
+        Vista::Visual,
     ];
 
     pub fn numero(self) -> usize {
@@ -59,6 +73,7 @@ impl Vista {
             Vista::Albumes => 4,
             Vista::Pistas => 5,
             Vista::Playlists => 6,
+            Vista::Visual => 7,
         }
     }
 
@@ -70,12 +85,23 @@ impl Vista {
             Vista::Albumes => "Álbumes",
             Vista::Pistas => "Pistas",
             Vista::Playlists => "Playlists",
+            Vista::Visual => "Visual",
         }
     }
 
     pub fn desde_numero(numero: usize) -> Option<Vista> {
         Vista::TODAS.get(numero.checked_sub(1)?).copied()
     }
+}
+
+/// Estado del modo visual a pantalla completa. Cuando `protector` es true,
+/// cualquier tecla o clic sale y se consume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModoVisual {
+    pub protector: bool,
+    vista_previa: Vista,
+    pantalla_previa: Pantalla,
+    seleccion_previa: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +276,32 @@ pub struct AppEstado {
     pub ruta_tema: PathBuf,
     pub caratulas: CacheCaratulas,
     pub zonas: ZonasRaton,
+    pub estado_captura: EstadoCaptura,
+    pub anillo: Option<Arc<Anillo>>,
+    rx_captura: Option<watch::Receiver<EstadoCaptura>>,
+    pub modo_visual: Option<ModoVisual>,
+    pub visuales: Vec<visuales::VisualCompartida>,
+    pub indice_visual: usize,
+    pub sensibilidad: f32,
+    pub fuente_paleta: FuentePaleta,
+    pub paleta_visual: PaletaVisual,
+    paleta_visual_objetivo: PaletaVisual,
+    transicion_paleta: Option<(Instant, PaletaVisual)>,
+    pub colores_actuales: Option<String>,
+    ultimo_album_colores: Option<i64>,
+    pub cabecera_hasta: Option<Instant>,
+    pub analisis: Analisis,
+    analizador: Analizador,
+    pub fps_degradado: bool,
+    frames_lentos: u8,
+    degradado_desde: Option<Instant>,
+    aviso_degradado: bool,
+    pub tamano_terminal: (u16, u16),
+    pub reinicio_visual: bool,
+    pub inactividad: Inactividad,
+    arranque: Instant,
+    ultimo_frame: Instant,
+    pub dt_frame: f32,
     ultimo_clic: Option<(Instant, u16, u16)>,
     pendiente_g: bool,
 }
@@ -257,6 +309,9 @@ pub struct AppEstado {
 impl AppEstado {
     pub fn nuevo(config: Config, paleta: Paleta, total_pistas: i64, ruta_tema: PathBuf) -> Self {
         let iconos = Iconos::desde(config.interfaz.iconos);
+        let visuales = visuales::registro(config.interfaz.iconos == ModoIconos::Ascii);
+        let paleta_visual = PaletaVisual::desde_tema(&paleta);
+        let fuente_paleta = config.visuales.paleta;
         let estado_reproductor = EstadoReproduccion {
             volumen: config.reproductor.volumen_inicial,
             ..EstadoReproduccion::default()
@@ -307,8 +362,337 @@ impl AppEstado {
             ruta_tema,
             caratulas: CacheCaratulas::nuevo(),
             zonas: ZonasRaton::default(),
+            estado_captura: EstadoCaptura::Desconectada,
+            anillo: None,
+            rx_captura: None,
+            modo_visual: None,
+            visuales,
+            indice_visual: 0,
+            sensibilidad: 1.0,
+            fuente_paleta,
+            paleta_visual,
+            paleta_visual_objetivo: paleta_visual,
+            transicion_paleta: None,
+            colores_actuales: None,
+            ultimo_album_colores: None,
+            cabecera_hasta: None,
+            analisis: Analisis::default(),
+            analizador: Analizador::nuevo(),
+            fps_degradado: false,
+            frames_lentos: 0,
+            degradado_desde: None,
+            aviso_degradado: false,
+            tamano_terminal: (0, 0),
+            reinicio_visual: false,
+            inactividad: Inactividad::nuevo(),
+            arranque: Instant::now(),
+            ultimo_frame: Instant::now(),
+            dt_frame: 0.033,
             ultimo_clic: None,
             pendiente_g: false,
+        }
+    }
+
+    pub fn conectar_captura(&mut self, rx: watch::Receiver<EstadoCaptura>, anillo: Arc<Anillo>) {
+        self.rx_captura = Some(rx);
+        self.anillo = Some(anillo);
+    }
+
+    pub fn actualizar_captura(&mut self) {
+        let Some(rx) = self.rx_captura.as_mut() else {
+            return;
+        };
+        if !rx.has_changed().unwrap_or(false) {
+            return;
+        }
+        self.estado_captura = rx.borrow_and_update().clone();
+    }
+
+    pub fn aplicar_ajustes_visuales(&mut self, conn: &Connection) -> anyhow::Result<()> {
+        let nombre = consultas::ajustes::leer(conn, "visual_actual")?
+            .unwrap_or_else(|| self.config.visuales.predeterminada.clone());
+        if let Some(indice) = visuales::indice_por_nombre(&nombre) {
+            self.indice_visual = indice;
+        }
+        self.fuente_paleta = consultas::ajustes::leer(conn, "paleta_fuente")?
+            .and_then(|valor| FuentePaleta::desde_str(&valor))
+            .unwrap_or(self.config.visuales.paleta);
+        self.sensibilidad = consultas::ajustes::leer(conn, "sensibilidad")?
+            .and_then(|valor| valor.parse::<f32>().ok())
+            .unwrap_or(1.0)
+            .clamp(0.25, 4.0);
+        self.actualizar_paleta_visual();
+        Ok(())
+    }
+
+    pub fn entrar_visual(&mut self, protector: bool) {
+        if self.modo_visual.is_some() || !self.config.visuales.activo {
+            return;
+        }
+        self.modo_visual = Some(ModoVisual {
+            protector,
+            vista_previa: self.vista,
+            pantalla_previa: self.pantalla,
+            seleccion_previa: self.seleccion,
+        });
+        self.busqueda_enfocada = false;
+        self.cabecera_hasta = Some(Instant::now() + DURACION_CABECERA);
+        self.inactividad.registrar();
+    }
+
+    pub fn salir_visual(&mut self) {
+        if let Some(modo) = self.modo_visual.take() {
+            self.vista = modo.vista_previa;
+            self.pantalla = modo.pantalla_previa;
+            self.seleccion = modo.seleccion_previa;
+        }
+    }
+
+    pub fn cabecera_visible(&self) -> bool {
+        self.modo_visual.is_some()
+            && self
+                .cabecera_hasta
+                .is_some_and(|hasta| Instant::now() < hasta)
+    }
+
+    fn refrescar_cabecera(&mut self) {
+        if self.modo_visual.is_some() {
+            self.cabecera_hasta = Some(Instant::now() + DURACION_CABECERA);
+        }
+    }
+
+    pub fn visual_actual_nombre(&self) -> &'static str {
+        self.visuales
+            .get(self.indice_visual)
+            .map(|visual| visual.borrow().nombre())
+            .unwrap_or("Espectro")
+    }
+
+    fn tecla_en_visual(&mut self, tecla: &KeyEvent, ctx: &ContextoApp<'_>) -> bool {
+        let Some(modo) = self.modo_visual else {
+            return false;
+        };
+        if modo.protector {
+            self.salir_visual();
+            return true;
+        }
+        if tecla.modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
+        match tecla.code {
+            KeyCode::Esc | KeyCode::Char('7') => {
+                self.salir_visual();
+                true
+            }
+            KeyCode::Char('v') => {
+                self.ciclar_visual(1, ctx);
+                true
+            }
+            KeyCode::Char('V') => {
+                self.ciclar_visual(-1, ctx);
+                true
+            }
+            KeyCode::Char(caracter @ '1'..='6') => {
+                self.saltar_visual(caracter as usize - '1' as usize, ctx);
+                true
+            }
+            KeyCode::Char('[') => {
+                self.ajustar_sensibilidad(0.8, ctx);
+                true
+            }
+            KeyCode::Char(']') => {
+                self.ajustar_sensibilidad(1.25, ctx);
+                true
+            }
+            KeyCode::Char('b') => {
+                self.alternar_paleta(ctx);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn ciclar_visual(&mut self, delta: i64, ctx: &ContextoApp<'_>) {
+        let total = self.visuales.len().max(1) as i64;
+        self.indice_visual = ((self.indice_visual as i64 + delta).rem_euclid(total)) as usize;
+        self.reinicio_visual = true;
+        self.guardar_ajuste(ctx, "visual_actual", self.visual_actual_nombre());
+        self.refrescar_cabecera();
+    }
+
+    fn saltar_visual(&mut self, indice: usize, ctx: &ContextoApp<'_>) {
+        if indice < self.visuales.len() {
+            self.indice_visual = indice;
+            self.reinicio_visual = true;
+            self.guardar_ajuste(ctx, "visual_actual", self.visual_actual_nombre());
+            self.refrescar_cabecera();
+        }
+    }
+
+    fn ajustar_sensibilidad(&mut self, factor: f32, ctx: &ContextoApp<'_>) {
+        self.sensibilidad = (self.sensibilidad * factor).clamp(0.25, 4.0);
+        self.guardar_ajuste(ctx, "sensibilidad", &format!("{:.3}", self.sensibilidad));
+        self.refrescar_cabecera();
+    }
+
+    fn alternar_paleta(&mut self, ctx: &ContextoApp<'_>) {
+        self.fuente_paleta = match self.fuente_paleta {
+            FuentePaleta::Tema => FuentePaleta::Caratula,
+            FuentePaleta::Caratula => FuentePaleta::Tema,
+        };
+        self.guardar_ajuste(ctx, "paleta_fuente", self.fuente_paleta.como_str());
+        self.refrescar_cabecera();
+    }
+
+    fn guardar_ajuste(&mut self, ctx: &ContextoApp<'_>, clave: &str, valor: &str) {
+        if let Err(error) = consultas::ajustes::escribir(ctx.conn, clave, valor) {
+            self.notificar(
+                NivelAviso::Error,
+                format!("No se pudo guardar el ajuste {clave}: {error:#}"),
+            );
+        }
+    }
+
+    fn paleta_objetivo(&self) -> PaletaVisual {
+        if self.fuente_paleta == FuentePaleta::Caratula
+            && let Some(texto) = self.colores_actuales.as_deref()
+            && let Some(paleta) = PaletaVisual::desde_texto(texto, self.paleta.fondo)
+        {
+            return paleta;
+        }
+        PaletaVisual::desde_tema(&self.paleta)
+    }
+
+    pub fn actualizar_paleta_visual(&mut self) {
+        let objetivo = self.paleta_objetivo();
+        if objetivo != self.paleta_visual_objetivo {
+            self.transicion_paleta = Some((Instant::now(), self.paleta_visual));
+            self.paleta_visual_objetivo = objetivo;
+        }
+        if let Some((inicio, desde)) = self.transicion_paleta {
+            let t = (inicio.elapsed().as_secs_f32() / DURACION_TRANSICION_PALETA).clamp(0.0, 1.0);
+            self.paleta_visual = PaletaVisual::interpolar(&desde, &self.paleta_visual_objetivo, t);
+            if t >= 1.0 {
+                self.transicion_paleta = None;
+            }
+        }
+    }
+
+    pub fn necesita_analisis(&self) -> bool {
+        if !self.config.visuales.activo {
+            return false;
+        }
+        self.modo_visual.is_some() || self.mini_espectro_visible()
+    }
+
+    pub fn mini_espectro_visible(&self) -> bool {
+        self.config.visuales.activo
+            && self.config.visuales.mini_espectro
+            && self.tamano_terminal.0 >= 70
+            && self.tamano_terminal.1 >= 20
+    }
+
+    fn tick_activo(&self) -> bool {
+        self.modo_visual.is_some() || self.mini_espectro_visible()
+    }
+
+    pub fn intervalo_tick(&self) -> Duration {
+        if !self.tick_activo() {
+            return TICK_BASE;
+        }
+        if self.fps_degradado {
+            return TICK_DEGRADADO;
+        }
+        let fps = u64::from(self.config.visuales.fps.clamp(15, 60));
+        Duration::from_millis((1000 / fps).max(1))
+    }
+
+    /// Analiza el anillo y prepara la paleta antes de dibujar el frame.
+    pub fn preparar_frame(&mut self) {
+        let ahora = Instant::now();
+        self.dt_frame = ahora
+            .duration_since(self.ultimo_frame)
+            .as_secs_f32()
+            .clamp(0.001, 0.5);
+        self.ultimo_frame = ahora;
+        if self.reinicio_visual {
+            if let Some(visual) = self.visuales.get(self.indice_visual) {
+                visual.borrow_mut().reiniciar();
+            }
+            self.reinicio_visual = false;
+        }
+        self.actualizar_paleta_visual();
+        if !self.necesita_analisis() {
+            return;
+        }
+        let ancho = self.tamano_terminal.0;
+        let (tasa_hz, sin_audio) = match &self.estado_captura {
+            EstadoCaptura::Capturando { tasa_hz, .. } => (*tasa_hz, false),
+            _ => (48_000, true),
+        };
+        let t_ms = self.arranque.elapsed().as_millis() as u64;
+        let en_pausa = self.estado_reproductor.pausado();
+        if let Some(anillo) = self.anillo.clone() {
+            self.analisis = self.analizador.procesar(
+                &anillo,
+                ancho,
+                self.sensibilidad,
+                tasa_hz,
+                t_ms,
+                sin_audio,
+                en_pausa,
+            );
+        } else {
+            let n_bandas = (ancho as usize / 2).clamp(16, 128);
+            let n_onda = (ancho as usize * 2).max(2);
+            self.analisis = Analisis::ambiental(t_ms, n_bandas, n_onda);
+            self.analisis.tasa_hz = tasa_hz;
+        }
+    }
+
+    pub fn registrar_frame(&mut self, duracion: Duration) {
+        if !self.tick_activo() {
+            return;
+        }
+        if duracion > UMBRAL_FRAME_LENTO {
+            self.frames_lentos = self.frames_lentos.saturating_add(1);
+        } else {
+            self.frames_lentos = 0;
+            if self.fps_degradado
+                && self
+                    .degradado_desde
+                    .is_some_and(|desde| desde.elapsed() >= MARGEN_RECUPERACION)
+            {
+                self.fps_degradado = false;
+                self.degradado_desde = None;
+                self.notificar(NivelAviso::Info, "Visuales de nuevo a 30 fps");
+            }
+        }
+        if self.frames_lentos >= 3 && !self.fps_degradado {
+            self.fps_degradado = true;
+            self.degradado_desde = Some(Instant::now());
+            if !self.aviso_degradado {
+                self.aviso_degradado = true;
+                self.notificar(NivelAviso::Aviso, "Visuales a 15 fps por rendimiento");
+            }
+        }
+    }
+
+    fn actualizar_protector(&mut self) {
+        if self.modo_visual.is_none() {
+            let autoinicio = self.config.visuales.autoinicio_min;
+            if self.config.visuales.activo
+                && autoinicio > 0
+                && self.dialogo.is_none()
+                && !self.esta_detenido()
+                && self.inactividad.segundos() >= autoinicio * 60
+            {
+                self.entrar_visual(true);
+            }
+            return;
+        }
+        if self.modo_visual.is_some_and(|modo| modo.protector) && self.esta_detenido() {
+            self.salir_visual();
         }
     }
 
@@ -322,6 +706,51 @@ impl AppEstado {
 
     pub fn recibir_caratula(&mut self, album_id: i64, imagen: image::DynamicImage) {
         self.caratulas.insertar(album_id, imagen);
+    }
+
+    pub fn recibir_colores(&mut self, album_id: i64, colores: String) {
+        if self
+            .estado_reproductor
+            .pista_actual
+            .as_ref()
+            .is_some_and(|pista| pista.album_id == album_id)
+        {
+            self.colores_actuales = Some(colores);
+        }
+    }
+
+    fn actualizar_colores_album(&mut self, ctx: &ContextoApp<'_>) {
+        let album_id = self
+            .estado_reproductor
+            .pista_actual
+            .as_ref()
+            .map(|pista| pista.album_id);
+        if album_id == self.ultimo_album_colores {
+            return;
+        }
+        self.ultimo_album_colores = album_id;
+        let Some(album_id) = album_id else {
+            self.colores_actuales = None;
+            return;
+        };
+        match consultas::albumes::colores(ctx.conn, album_id) {
+            Ok(Some(colores)) => self.colores_actuales = Some(colores),
+            Ok(None) => {
+                self.colores_actuales = None;
+                if let Some(ruta) = self
+                    .estado_reproductor
+                    .pista_actual
+                    .as_ref()
+                    .and_then(|pista| pista.caratula_ruta.clone())
+                {
+                    self.caratulas.solicitar_colores(album_id, &ruta);
+                }
+            }
+            Err(error) => {
+                tracing::warn!("no se pudieron leer los colores del álbum: {error:#}");
+                self.colores_actuales = None;
+            }
+        }
     }
 
     pub fn notificar(&mut self, nivel: NivelAviso, texto: impl Into<String>) {
@@ -338,7 +767,11 @@ impl AppEstado {
     pub fn manejar(&mut self, evento: AppEvento, ctx: &ContextoApp<'_>) {
         match evento {
             AppEvento::Tecla(tecla) => {
+                self.inactividad.registrar();
                 if self.dialogo.is_some() && self.tecla_en_dialogo(&tecla, ctx) {
+                    return;
+                }
+                if self.tecla_en_visual(&tecla, ctx) {
                     return;
                 }
                 if self.busqueda_enfocada && self.tecla_en_busqueda(&tecla) {
@@ -356,12 +789,21 @@ impl AppEstado {
                 self.avisos
                     .retain(|aviso| aviso.creado.elapsed() < DURACION_TOAST);
                 self.actualizar_busqueda(ctx);
+                self.actualizar_paleta_visual();
+                self.actualizar_protector();
+                if self
+                    .cabecera_hasta
+                    .is_some_and(|hasta| Instant::now() >= hasta)
+                {
+                    self.cabecera_hasta = None;
+                }
             }
             AppEvento::Reproductor(estado) => {
                 self.estado_reproductor = estado;
                 if self.seleccion_cola >= self.estado_reproductor.cola.len() {
                     self.seleccion_cola = self.estado_reproductor.cola.len().saturating_sub(1);
                 }
+                self.actualizar_colores_album(ctx);
             }
             AppEvento::Escaneo(evento) => self.manejar_escaneo(evento, ctx),
             AppEvento::TemaActualizado(paleta) => {
@@ -373,8 +815,18 @@ impl AppEstado {
             AppEvento::Salir => {
                 self.debe_salir = true;
             }
-            AppEvento::Raton(evento) => self.manejar_raton(evento, ctx),
-            AppEvento::Redimension(_, _) => {}
+            AppEvento::Raton(evento) => {
+                self.inactividad.registrar();
+                if self.modo_visual.is_some_and(|modo| modo.protector) {
+                    self.salir_visual();
+                    return;
+                }
+                self.manejar_raton(evento, ctx);
+            }
+            AppEvento::Redimension(ancho, alto) => {
+                self.tamano_terminal = (ancho, alto);
+                self.reinicio_visual = true;
+            }
         }
     }
 
@@ -398,6 +850,14 @@ impl AppEstado {
                 self.ayuda_visible = !self.ayuda_visible;
             }
             Accion::IrA(vista) => {
+                if vista == Vista::Visual {
+                    if self.modo_visual.is_some() {
+                        self.salir_visual();
+                    } else {
+                        self.entrar_visual(false);
+                    }
+                    return;
+                }
                 self.pila.clear();
                 self.pantalla = Pantalla::Lista;
                 self.seleccion = 0;
@@ -1746,7 +2206,7 @@ impl AppEstado {
             Vista::Albumes => self.refrescar_albumes(ctx),
             Vista::Pistas => self.pagina_nueva(ctx),
             Vista::Playlists => self.refrescar_playlists(ctx),
-            Vista::Buscar => {}
+            Vista::Buscar | Vista::Visual => {}
         }
     }
 

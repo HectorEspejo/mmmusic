@@ -25,7 +25,14 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect, compacto: bool) {
 
     let mut lineas = Vec::new();
     for vista in Vista::TODAS {
-        let activa = app.vista == vista;
+        if vista == Vista::Visual && !app.config.visuales.activo {
+            continue;
+        }
+        let activa = if vista == Vista::Visual {
+            app.modo_visual.is_some()
+        } else {
+            app.vista == vista
+        };
         let marcador = if app.foco == Foco::Sidebar && activa {
             " ◄"
         } else {

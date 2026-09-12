@@ -6,6 +6,7 @@ pub mod cola;
 pub mod inicio;
 pub mod pistas;
 pub mod playlists;
+pub mod visual;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -25,6 +26,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
         Vista::Albumes => albumes::dibujar(frame, app, contenido),
         Vista::Pistas => pistas::dibujar(frame, app, contenido),
         Vista::Playlists => playlists::dibujar(frame, app, contenido),
+        Vista::Visual => {}
     }
     frame.render_widget(
         Paragraph::new(Span::styled(

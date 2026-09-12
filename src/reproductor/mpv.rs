@@ -10,6 +10,8 @@ pub const OPCIONES_INICIALES: &[(&str, &str)] = &[
     ("load-scripts", "no"),
     ("config", "no"),
     ("gapless-audio", "yes"),
+    ("ao", "pipewire,"),
+    ("audio-client-name", "mmmusic"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]

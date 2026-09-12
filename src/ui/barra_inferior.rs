@@ -75,9 +75,28 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
     }
     let [fila_info, fila_progreso] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(resto);
-    let [info, controles] =
-        Layout::horizontal([Constraint::Min(10), Constraint::Length(ancho_controles)])
-            .areas(fila_info);
+    let mostrar_mini = app.mini_espectro_visible();
+    let ancho_mini = if mostrar_mini {
+        crate::visuales::mini_espectro::BARRAS as u16 + 1
+    } else {
+        0
+    };
+    let [info, zona_mini, controles] = Layout::horizontal([
+        Constraint::Min(10),
+        Constraint::Length(ancho_mini),
+        Constraint::Length(ancho_controles),
+    ])
+    .areas(fila_info);
+    if mostrar_mini && zona_mini.width > 0 {
+        frame.render_widget(
+            Paragraph::new(crate::visuales::mini_espectro::linea(
+                &app.analisis,
+                &app.paleta_visual,
+            ))
+            .style(Style::new().bg(app.paleta.fondo)),
+            zona_mini,
+        );
+    }
     let parrafo_info = Paragraph::new(vec![
         Line::from(Span::styled(
             format!(" {titulo}"),

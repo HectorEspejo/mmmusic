@@ -1,4 +1,5 @@
 pub mod app;
+pub mod audio;
 pub mod biblioteca;
 pub mod cli;
 pub mod config;
@@ -9,3 +10,4 @@ pub mod reproductor;
 pub mod scrobbling;
 pub mod tema;
 pub mod ui;
+pub mod visuales;

@@ -306,6 +306,46 @@ pub mod ajustes {
     }
 }
 
+pub mod albumes {
+    use super::*;
+
+    pub fn colores(conn: &Connection, album_id: i64) -> Result<Option<String>> {
+        conn.query_row(
+            "SELECT colores FROM ALBUMES WHERE id = ?1",
+            [album_id],
+            |fila| fila.get(0),
+        )
+        .optional()
+        .with_context(|| format!("no se pudieron leer los colores del álbum {album_id}"))
+        .map(Option::flatten)
+    }
+
+    pub fn fijar_colores(conn: &Connection, album_id: i64, colores: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE ALBUMES SET colores = ?1 WHERE id = ?2",
+            params![colores, album_id],
+        )
+        .with_context(|| format!("no se pudieron guardar los colores del álbum {album_id}"))?;
+        Ok(())
+    }
+
+    pub fn sin_colores(conn: &Connection, limite: usize) -> Result<Vec<(i64, String)>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT id, caratula_ruta FROM ALBUMES
+                  WHERE colores IS NULL AND caratula_ruta IS NOT NULL
+                  ORDER BY id
+                  LIMIT ?1",
+            )
+            .context("no se pudieron preparar los álbumes sin colores")?;
+        sentencia
+            .query_map([limite as i64], |fila| Ok((fila.get(0)?, fila.get(1)?)))
+            .context("no se pudieron listar los álbumes sin colores")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer los álbumes sin colores")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrdenAlbumes {
     Titulo,
