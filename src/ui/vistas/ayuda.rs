@@ -8,7 +8,7 @@ use crate::app::AppEstado;
 
 pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
     let ancho = area.width.saturating_sub(4).clamp(20, 76);
-    let alto = area.height.saturating_sub(2).clamp(6, 46);
+    let alto = area.height.saturating_sub(2).clamp(6, 60);
     let destino = Rect {
         x: area.x + area.width.saturating_sub(ancho) / 2,
         y: area.y + area.height.saturating_sub(alto) / 2,
@@ -105,6 +105,23 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
             "CLI",
             "autorizar-lastfm · probar-servicios · reescanear --completo",
         ),
+    ] {
+        lineas.push(Line::from(vec![
+            Span::styled(format!("   {k:<17} "), tecla),
+            Span::styled(d, descripcion),
+        ]));
+    }
+    añadir_seccion("Visual", &mut lineas);
+    for (k, d) in [
+        ("7", "entrar o salir del modo visual"),
+        ("v / V", "siguiente / anterior visual"),
+        (
+            "1-6",
+            "Espectro, Barras y ondas, Ambiente, Partículas, Caleidoscopio, Túnel",
+        ),
+        ("[ / ]", "sensibilidad ×0.8 / ×1.25"),
+        ("b", "paleta: tema ↔ carátula"),
+        ("Esc", "salir del modo visual"),
     ] {
         lineas.push(Line::from(vec![
             Span::styled(format!("   {k:<17} "), tecla),

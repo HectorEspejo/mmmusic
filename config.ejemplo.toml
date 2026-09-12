@@ -42,3 +42,22 @@ listenbrainz = false
 lastfm = false
 # Envía "now playing" al cargar una pista elegible.
 now_playing = true
+
+[visuales]
+# Activa las visuales reactivas y el mini espectro (requiere PipeWire).
+# false elimina el hilo de captura, el mini espectro y la sección 7 Visual.
+activo = true
+# Fotogramas por segundo del modo visual y del mini espectro (15-60).
+fps = 30
+# Visual inicial: espectro, barras y ondas, ambiente, partículas,
+# caleidoscopio o túnel.
+predeterminada = "espectro"
+# Paleta inicial: "tema" (Omarchy) o "caratula" (colores dominantes de la carátula).
+paleta = "tema"
+# Mini espectro de 12 barras en la barra inferior (se oculta en modo compacto).
+mini_espectro = true
+# Minutos de inactividad antes de entrar en el modo visual como protector
+# de pantalla (0 = desactivado).
+autoinicio_min = 0
+# Nombre del nodo de PipeWire a capturar (application.name/node.name).
+nodo = "mmmusic"

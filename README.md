@@ -21,6 +21,9 @@ terminal y MPRIS para Waybar/`playerctl` y las teclas multimedia de Hyprland.
   estado en la barra inferior.
 - Recopilatorios sin `albumartist` agrupados bajo "Varios artistas" por carpeta
   y álbum.
+- Visuales reactivas en terminal (espectro, barras y ondas, ambiente,
+  partículas, caleidoscopio y túnel) que capturan el audio propio desde
+  PipeWire, con mini espectro y paleta del tema o de la carátula.
 - Tema del sistema de Omarchy con recarga en caliente al cambiar de tema.
 - Carátulas embebidas o `cover.*` en caché 300×300, renderizadas con
   `ratatui-image` (Kitty/Sixel en terminales compatibles, half-blocks en
@@ -33,8 +36,11 @@ terminal y MPRIS para Waybar/`playerctl` y las teclas multimedia de Hyprland.
 Dependencias de sistema:
 
 ```bash
-sudo pacman -S mpv pkgconf
+sudo pacman -S mpv pkgconf pipewire clang
 ```
+
+`pipewire` (ya presente en Omarchy) y `clang` (bindgen de las bindings de
+PipeWire) son necesarias para las visuales.
 
 Compilar y ejecutar:
 
@@ -83,6 +89,31 @@ inferior muestra `↑`, `…N` o `!` según el estado.
 `credenciales.toml` es el único fichero no regenerable: haz una copia de
 seguridad aparte (no la subas a ningún repositorio).
 
+## Visuales
+
+La sección `7 Visual` muestra a pantalla completa visualizaciones que reaccionan
+al audio: Espectro, Barras y ondas, Ambiente, Partículas, Caleidoscopio y
+Túnel. La barra inferior incorpora además un mini espectro de 12 barras.
+
+El audio se captura del nodo de PipeWire propio de mmmusic
+(`audio-client-name=mmmusic`) sin decodificar dos veces; si el enlace directo
+con el nodo no está disponible se usa la captura por monitor del dispositivo y
+la cabecera lo anuncia como "captura por monitor" (puede incluir audio de otras
+aplicaciones). Sin PipeWire o sin nodo, las visuales pasan a modo ambiental.
+
+Ajustes en `[visuales]` de `config.toml`: `activo`, `fps` (15-60),
+`predeterminada`, `paleta` (`tema` o `caratula`), `mini_espectro`,
+`autoinicio_min` (protector de pantalla) y `nodo`. Con `activo = false`
+desaparecen el hilo de captura, el mini espectro y la sección 7.
+
+La paleta `caratula` usa los cinco colores dominantes de la carátula del álbum
+en reproducción, calculados en segundo plano y guardados en la base de datos.
+Si una carátula aún no tiene colores se usa la del tema y la cabecera muestra
+`♪`.
+
+> Aviso de fotosensibilidad: las visuales con pulsos rápidos pueden resultar
+> molestas. Para un uso suave, baja `fps` a 15 o usa la visual «Ambiente».
+
 ## Reescaneo completo
 
 Tras actualizar mmmusic a una versión que cambie la agrupación de la
@@ -104,10 +135,16 @@ Globales:
 | `Esc` | Volver o cerrar |
 | `?` | Ayuda |
 | `1`–`6` | Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists |
+| `7` | Modo visual (entrar o salir) |
 | `c` | Panel de cola |
 | `Tab` / `Shift+Tab` | Ciclar foco |
 | `Ctrl+r` | Reescanear |
 | `t` | Recargar tema |
+
+En el modo visual: `v`/`V` ciclan las visuales, `1`–`6` saltan a una concreta,
+`[`/`]` ajustan la sensibilidad (×0.8 / ×1.25), `b` alterna la paleta
+tema ↔ carátula y `7`/`Esc` salen; los atajos de reproducción y `L` siguen
+activos.
 
 Navegación: `j/k/h/l`, flechas, `gg`/`G`, `Ctrl+d`/`Ctrl+u`, `Enter`.
 En la tabla de Pistas, `o` cambia la columna de orden y `O` la invierte.

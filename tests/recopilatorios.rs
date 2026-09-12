@@ -218,6 +218,43 @@ fn revierte_al_etiquetar_albumartist() {
 }
 
 #[test]
+fn revierte_y_relee_las_pistas_no_releidas() {
+    let temporal = tempfile::tempdir().expect("tempdir");
+    let biblioteca = preparar_biblioteca(&temporal.path().join("biblioteca"));
+    let ruta_bd = temporal.path().join("mmmusic.db");
+
+    let (rx, manejo) = escanear(&ruta_bd, vec![biblioteca.clone()], ModoEscaneo::Incremental);
+    assert!(manejo.esperar(Duration::from_secs(60)));
+    let _ = esperar_final(&rx);
+
+    std::thread::sleep(Duration::from_millis(1_100));
+    etiquetar_albumartist(
+        &biblioteca.join("Recopilatorio").join("02 Segunda.mp3"),
+        "Colectivo Prueba",
+    );
+
+    let (rx, manejo) = escanear(&ruta_bd, vec![biblioteca], ModoEscaneo::Incremental);
+    assert!(manejo.esperar(Duration::from_secs(60)));
+    let (_, actualizadas, _) = resumen(&esperar_final(&rx));
+    assert_eq!(actualizadas, 1, "solo se relee la pista etiquetada");
+
+    let conn = abrir_bd(&ruta_bd);
+    let albumes = albumes(&conn);
+    assert_eq!(albumes.len(), 3, "cada pista vuelve a su álbum normal");
+    let resumen: Vec<(String, Option<i64>)> = albumes
+        .iter()
+        .map(|album| (album.artista.clone(), album.anio))
+        .collect();
+    assert!(resumen.contains(&("Artista Alfa".to_string(), Some(2020))));
+    assert!(resumen.contains(&("Colectivo Prueba".to_string(), Some(2019))));
+    assert!(resumen.contains(&("Artista Gamma".to_string(), Some(2021))));
+    for album in &albumes {
+        assert!(!album.varios_artistas);
+        assert_eq!(album.num_pistas, 1);
+    }
+}
+
+#[test]
 fn reescaneo_completo_reagrupa_una_base_fragmentada() {
     let temporal = tempfile::tempdir().expect("tempdir");
     let biblioteca = preparar_biblioteca(&temporal.path().join("biblioteca"));

@@ -7,11 +7,12 @@ tipo Spotify (sidebar, contenido, barra inferior de "sonando ahora") y atajos
 vim. Cliente: proyecto personal de Hector (4d3).
 Stack: Rust 2024, ratatui + crossterm, libmpv (`libmpv2`), rusqlite `bundled`,
 lofty, ratatui-image, mpris-server (tokio solo en el hilo MPRIS), serde + toml,
-notify, tracing, ureq (rustls) en el hilo de scrobbling, md5, clap.
+notify, tracing, ureq (rustls) en el hilo de scrobbling, serde_json, md5, clap,
+pipewire (libpipewire-0.3) en el hilo de captura, realfft, canvas braille de ratatui.
 
 ## Documentación del proyecto
 
-La documentación funcional vive en `docs/`:
+La documentación funcional vive en `docs/` (plano, sin subcarpetas por fase):
 
 - `mmmusic-maestro.md` — visión global, mapa de fases y estado del proyecto
 - `mmmusic-fase1-informe.md` — especificación funcional completa de la fase
@@ -19,7 +20,10 @@ La documentación funcional vive en `docs/`:
 - `mmmusic-fase1-implementacion.md` — informe de implementación de la fase 1 (cerrada)
 - `mmmusic-fase2-informe.md` — especificación funcional completa de la fase 2
 - `mmmusic-fase2-checklist.md` — alcance verificable de la fase 2
-- `mmmusic-fase2-implementacion.md` — informe de implementación (lo escribes tú)
+- `mmmusic-fase2-implementacion.md` — informe de implementación de la fase 2 (cerrada)
+- `mmmusic-fase3-informe.md` — especificación funcional completa de la fase 3
+- `mmmusic-fase3-checklist.md` — alcance verificable de la fase 3
+- `mmmusic-fase3-implementacion.md` — informe de implementación (lo escribes tú)
 
 El informe de fase manda sobre tu criterio: si algo te parece incorrecto o
 incompleto, no lo cambies por tu cuenta — impleméntalo como está o párate y
@@ -51,8 +55,9 @@ coméntalo con el desarrollador.
   user_version`, nunca destructivas dentro de una fase.
 - mpv se inicializa siempre con `vo=null`, `audio-display=no`, `ytdl=no`,
   `load-scripts=no`, `config=no`, `gapless-audio=yes`.
-- Dependencias de sistema en Arch: `mpv`, `pkgconf` (nunca `libchafa`:
-  `ratatui-image` va sin la feature `chafa`). Comandos: `cargo run`,
+- Dependencias de sistema en Arch: `mpv`, `pkgconf`, `pipewire` y `clang`
+  (bindgen del crate `pipewire`); nunca `libchafa` (`ratatui-image` va sin la
+  feature `chafa`). Comandos: `cargo run`,
   `cargo test`, `cargo clippy --all-targets -- -D warnings`,
   `cargo fmt --check`. Antes de cerrar una sesión los cuatro deben pasar.
   Instalación: `instalar.sh` (cargo install + `mmmusic.desktop`).
@@ -75,6 +80,23 @@ coméntalo con el desarrollador.
   reescaneo.
 - Releer ficheros tras una migración se hace con la bandera
   `AJUSTES.reescaneo_completo_pendiente`, nunca dentro del SQL de la migración.
+- Todo texto hacia logs, toasts o `error_msg` pasa por `Credenciales::redactar()`.
+  Los clientes HTTP comprueban `url_permitida()` antes de cada petición.
+- Entidades virtuales de la UI (como "♥ Favoritas") usan ids centinela
+  negativos; nunca se insertan en la base.
+- Reintentos y clasificación de respuestas van en `scrobbling/planificador.rs`
+  (sin E/S); reutilízalo para cualquier integración nueva.
+- Subcomandos actuales: `reescanear [--completo]`, `probar-servicios`,
+  `autorizar-lastfm`. Códigos de salida: 0 OK, 1 configuración, 2 red.
+- Audio para visuales: solo capturando el nodo propio de mmmusic en PipeWire
+  (`audio-client-name=mmmusic`); nunca decodificar en paralelo. Los callbacks
+  de tiempo real (PipeWire `process`, wakeup de libmpv) no bloquean ni asignan.
+- Trabajo por frame (FFT, dibujo) solo cuando hay algo visible; el tick de 33 ms
+  se activa bajo demanda y el tick base sigue en 250 ms.
+- Las visuales son reinterpretaciones propias con nombres genéricos en
+  castellano; no copies diseños, nombres ni recursos de otros reproductores.
+- Tests sin PipeWire: el análisis y las visuales se prueban con señales
+  sintéticas; la captura real la valida el desarrollador en Omarchy.
 - Fixtures de audio en `tests/fixtures/` (ficheros diminutos de los seis
   formatos, generados una vez con ffmpeg y versionados).
 

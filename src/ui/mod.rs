@@ -1,5 +1,6 @@
 pub mod barra_inferior;
 pub mod componentes;
+pub mod inactividad;
 pub mod sidebar;
 pub mod teclas;
 pub mod vistas;
@@ -110,34 +111,40 @@ fn instalar_hook_panico() {
 pub fn dibujar(frame: &mut Frame, app: &mut AppEstado) {
     app.zonas = crate::app::ZonasRaton::default();
     let area = frame.area();
+    app.tamano_terminal = (area.width, area.height);
     let compacto_ancho = area.width < 70;
     let compacto_alto = area.height < 20;
     let alto_barra = if compacto_alto { 2 } else { 3 };
     let [cuerpo, barra] =
         Layout::vertical([Constraint::Min(1), Constraint::Length(alto_barra)]).areas(area);
-    let ancho_sidebar = if compacto_ancho {
-        4
+    if app.modo_visual.is_some() {
+        vistas::visual::dibujar(frame, app, cuerpo);
     } else {
-        app.config.interfaz.ancho_sidebar.min(area.width / 3)
-    };
-    let mostrar_cola = app.cola_visible && !compacto_ancho && cuerpo.width > 50;
-    let (area_sidebar, area_contenido, area_cola) = if mostrar_cola {
-        let [s, c, cola] = Layout::horizontal([
-            Constraint::Length(ancho_sidebar),
-            Constraint::Min(20),
-            Constraint::Length(30),
-        ])
-        .areas(cuerpo);
-        (s, c, Some(cola))
-    } else {
-        let [s, c] = Layout::horizontal([Constraint::Length(ancho_sidebar), Constraint::Min(1)])
+        let ancho_sidebar = if compacto_ancho {
+            4
+        } else {
+            app.config.interfaz.ancho_sidebar.min(area.width / 3)
+        };
+        let mostrar_cola = app.cola_visible && !compacto_ancho && cuerpo.width > 50;
+        let (area_sidebar, area_contenido, area_cola) = if mostrar_cola {
+            let [s, c, cola] = Layout::horizontal([
+                Constraint::Length(ancho_sidebar),
+                Constraint::Min(20),
+                Constraint::Length(30),
+            ])
             .areas(cuerpo);
-        (s, c, None)
-    };
-    sidebar::dibujar(frame, app, area_sidebar, compacto_ancho);
-    vistas::dibujar(frame, app, area_contenido);
-    if let Some(cola) = area_cola {
-        vistas::cola::dibujar(frame, app, cola);
+            (s, c, Some(cola))
+        } else {
+            let [s, c] =
+                Layout::horizontal([Constraint::Length(ancho_sidebar), Constraint::Min(1)])
+                    .areas(cuerpo);
+            (s, c, None)
+        };
+        sidebar::dibujar(frame, app, area_sidebar, compacto_ancho);
+        vistas::dibujar(frame, app, area_contenido);
+        if let Some(cola) = area_cola {
+            vistas::cola::dibujar(frame, app, cola);
+        }
     }
     barra_inferior::dibujar(frame, app, barra, compacto_alto);
     componentes::notificacion::dibujar(frame, app, area);

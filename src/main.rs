@@ -1,15 +1,17 @@
 use std::path::Path;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::event::{self, Event as EventoCrossterm};
 use mmmusic::app::{AppEstado, ContextoApp, Vista};
+use mmmusic::audio::{self, Anillo};
 use mmmusic::biblioteca::escaner::ModoEscaneo;
-use mmmusic::biblioteca::{bd, consultas};
+use mmmusic::biblioteca::{bd, caratulas, consultas};
 use mmmusic::cli::{self, Cli, Comando};
 use mmmusic::config::{Config, Rutas};
 use mmmusic::credenciales;
@@ -20,14 +22,12 @@ use mmmusic::scrobbling;
 use mmmusic::tema;
 use mmmusic::tema::VigilanteTema;
 use mmmusic::ui;
-use mmmusic::ui::componentes::imagen;
+use mmmusic::ui::componentes::imagen::{self, RespuestaCaratula};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use rusqlite::Connection;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
-
-const TICK: Duration = Duration::from_millis(250);
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -66,6 +66,12 @@ fn ejecutar_tui() -> Result<()> {
         total_pistas,
         rutas.fichero_tema.clone(),
     );
+    if let Err(error) = app.aplicar_ajustes_visuales(&conn) {
+        app.notificar(
+            NivelAviso::Aviso,
+            format!("No se pudieron leer los ajustes de visuales: {error:#}"),
+        );
+    }
     if let Some(aviso) = aviso_tema {
         app.notificar(NivelAviso::Aviso, aviso);
     }
@@ -91,7 +97,17 @@ fn ejecutar_tui() -> Result<()> {
     } else {
         None
     };
-
+    let manejo_colores =
+        match caratulas::lanzar_colores_pendientes(rutas.base_datos.clone(), tx_app.clone()) {
+            Ok(manejo) => Some(manejo),
+            Err(error) => {
+                app.notificar(
+                    NivelAviso::Aviso,
+                    format!("No se pudieron calcular los colores de carátula: {error:#}"),
+                );
+                None
+            }
+        };
     let carga_credenciales = credenciales::cargar(&rutas.credenciales)?;
     if carga_credenciales.permisos_corregidos {
         app.notificar(
@@ -99,6 +115,25 @@ fn ejecutar_tui() -> Result<()> {
             "Las credenciales eran legibles por otros usuarios; permisos corregidos a 600",
         );
     }
+    let anillo = Arc::new(Anillo::nuevo());
+    let manejo_captura = if carga.config.visuales.activo {
+        match audio::pipewire::lanzar(
+            carga.config.visuales.nodo.clone(),
+            anillo.clone(),
+            tx_app.clone(),
+        ) {
+            Ok((manejo, rx_captura)) => {
+                app.conectar_captura(rx_captura, anillo);
+                Some(manejo)
+            }
+            Err(error) => {
+                app.notificar(NivelAviso::Aviso, format!("Visuales sin audio: {error:#}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
     let (manejo_scrobbling, _rx_scrobbling) = scrobbling::lanzar(
         rutas.base_datos.clone(),
         rutas.credenciales.clone(),
@@ -155,6 +190,12 @@ fn ejecutar_tui() -> Result<()> {
     let resultado = bucle(&mut terminal, &mut app, &recursos);
     app.cancelar_escaneo();
     manejo_reproductor.apagar();
+    if let Some(manejo) = manejo_captura {
+        manejo.apagar();
+    }
+    if let Some(manejo) = manejo_colores {
+        manejo.apagar();
+    }
     manejo_scrobbling.apagar();
     ui::restaurar();
     resultado
@@ -164,7 +205,7 @@ struct RecursosBucle<'a> {
     conn: &'a Connection,
     tx_app: &'a Sender<AppEvento>,
     rx_app: &'a Receiver<AppEvento>,
-    rx_caratulas: &'a Receiver<(i64, image::DynamicImage)>,
+    rx_caratulas: &'a Receiver<RespuestaCaratula>,
     ruta_bd: &'a Path,
     dir_caratulas: &'a Path,
     reproductor: &'a ManejoReproductor,
@@ -177,11 +218,30 @@ fn bucle(
     recursos: &RecursosBucle<'_>,
 ) -> Result<()> {
     loop {
-        for (album_id, imagen) in recursos.rx_caratulas.try_iter() {
-            app.recibir_caratula(album_id, imagen);
+        for respuesta in recursos.rx_caratulas.try_iter() {
+            match respuesta {
+                RespuestaCaratula::Imagen(album_id, imagen) => {
+                    app.recibir_caratula(album_id, imagen)
+                }
+                RespuestaCaratula::Colores(album_id, colores) => {
+                    if let Err(error) =
+                        consultas::albumes::fijar_colores(recursos.conn, album_id, &colores)
+                    {
+                        tracing::warn!(
+                            "no se pudieron guardar los colores del álbum {album_id}: {error:#}"
+                        );
+                    }
+                    app.recibir_colores(album_id, colores);
+                }
+            }
         }
+        app.actualizar_captura();
+        let inicio = Instant::now();
+        app.preparar_frame();
         terminal.draw(|marco| ui::dibujar(marco, app))?;
-        let evento = match recursos.rx_app.recv_timeout(TICK) {
+        app.registrar_frame(inicio.elapsed());
+        let intervalo = app.intervalo_tick();
+        let evento = match recursos.rx_app.recv_timeout(intervalo) {
             Ok(evento) => evento,
             Err(RecvTimeoutError::Timeout) => AppEvento::Tick,
             Err(RecvTimeoutError::Disconnected) => break,

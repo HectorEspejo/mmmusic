@@ -8,6 +8,7 @@ use tracing::info;
 const MIGRACIONES: &[(i32, &str)] = &[
     (1, include_str!("migraciones/001_inicial.sql")),
     (2, include_str!("migraciones/002_recopilatorios_envios.sql")),
+    (3, include_str!("migraciones/003_colores_albumes.sql")),
 ];
 
 pub fn abrir(ruta: &Path) -> Result<Connection> {
@@ -157,7 +158,7 @@ mod pruebas {
         let mut conn = Connection::open_in_memory().expect("conexión en memoria");
         conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
         let version = migrar(&mut conn).expect("migración");
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         for tabla in [
             "ARTISTAS",
             "ALBUMES",
@@ -189,7 +190,15 @@ mod pruebas {
             .expect("bandera de reescaneo");
         assert_eq!(pendiente, "1");
         let version2 = migrar(&mut conn).expect("segunda migración");
-        assert_eq!(version2, 2);
+        assert_eq!(version2, 3);
+        let colores: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('ALBUMES') WHERE name = 'colores'",
+                [],
+                |f| f.get(0),
+            )
+            .expect("columna colores");
+        assert_eq!(colores, 1);
     }
 
     #[test]

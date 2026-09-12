@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
 use image::imageops::FilterType;
@@ -8,6 +11,10 @@ use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
 use rusqlite::{Connection, params};
 use tracing::{info, warn};
+
+use super::{bd, consultas};
+use crate::eventos::{AppEvento, NivelAviso};
+use crate::visuales::paleta::{a_hex, colores_dominantes};
 
 const LADO_CACHE: u32 = 300;
 const CALIDAD_JPEG: u8 = 85;
@@ -59,7 +66,7 @@ pub fn buscar_fichero(carpeta: &Path) -> Option<PathBuf> {
     candidatos.into_iter().next()
 }
 
-pub fn cachear(datos: &[u8], album_id: i64, dir_cache: &Path) -> Result<PathBuf> {
+pub fn cachear(datos: &[u8], album_id: i64, dir_cache: &Path) -> Result<(PathBuf, Option<String>)> {
     fs::create_dir_all(dir_cache)
         .with_context(|| format!("no se pudo crear {}", dir_cache.display()))?;
     let imagen = image::load_from_memory(datos).context("imagen de carátula ilegible")?;
@@ -67,6 +74,13 @@ pub fn cachear(datos: &[u8], album_id: i64, dir_cache: &Path) -> Result<PathBuf>
     let ruta = dir_cache.join(format!("{album_id}.jpg"));
     let fichero =
         fs::File::create(&ruta).with_context(|| format!("no se pudo crear {}", ruta.display()))?;
+    let colores = colores_dominantes(&redimensionada).map(|colores| {
+        colores
+            .iter()
+            .map(|color| a_hex(*color))
+            .collect::<Vec<_>>()
+            .join(",")
+    });
     let rgb = redimensionada.to_rgb8();
     let mut codificador = image::codecs::jpeg::JpegEncoder::new_with_quality(fichero, CALIDAD_JPEG);
     codificador
@@ -77,7 +91,7 @@ pub fn cachear(datos: &[u8], album_id: i64, dir_cache: &Path) -> Result<PathBuf>
             image::ExtendedColorType::Rgb8,
         )
         .context("no se pudo escribir la carátula")?;
-    Ok(ruta)
+    Ok((ruta, colores))
 }
 
 pub fn procesar_pendientes(
@@ -152,13 +166,96 @@ fn generar_para_album(conn: &Connection, album_id: i64, dir_cache: &Path) -> Res
     let Some(datos) = datos else {
         return Ok(false);
     };
-    let ruta_cache = cachear(&datos, album_id, dir_cache)?;
+    let (ruta_cache, colores) = cachear(&datos, album_id, dir_cache)?;
     conn.execute(
-        "UPDATE ALBUMES SET caratula_ruta = ?1 WHERE id = ?2",
-        params![ruta_cache.to_string_lossy().to_string(), album_id],
+        "UPDATE ALBUMES SET caratula_ruta = ?1, colores = ?2 WHERE id = ?3",
+        params![ruta_cache.to_string_lossy().to_string(), colores, album_id],
     )
     .context("no se pudo actualizar la carátula del álbum")?;
     Ok(true)
+}
+
+/// Completa `ALBUMES.colores` para los álbumes que ya tienen carátula
+/// cacheada. Se ejecuta en segundo plano al arrancar, sin reescanear.
+pub fn procesar_colores_pendientes(
+    conn: &Connection,
+    cancelacion: Option<&AtomicBool>,
+) -> Result<usize> {
+    let pendientes = consultas::albumes::sin_colores(conn, 10_000)?;
+    let mut procesados = 0usize;
+    for (album_id, ruta) in pendientes {
+        if cancelacion.is_some_and(|bandera| bandera.load(Ordering::SeqCst)) {
+            break;
+        }
+        let ruta = Path::new(&ruta);
+        if !ruta.exists() {
+            continue;
+        }
+        match image::open(ruta) {
+            Ok(imagen) => {
+                let Some(colores) = colores_dominantes(&imagen) else {
+                    warn!(album_id, "la carátula no tiene colores utilizables");
+                    continue;
+                };
+                let texto = colores
+                    .iter()
+                    .map(|color| a_hex(*color))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                if let Err(error) = consultas::albumes::fijar_colores(conn, album_id, &texto) {
+                    warn!(album_id, "no se pudieron guardar los colores: {error:#}");
+                } else {
+                    procesados += 1;
+                }
+            }
+            Err(error) => warn!(album_id, "carátula ilegible: {error}"),
+        }
+    }
+    Ok(procesados)
+}
+
+pub struct ManejoColores {
+    cancelacion: Arc<AtomicBool>,
+    hilo: Option<JoinHandle<()>>,
+}
+
+impl ManejoColores {
+    pub fn apagar(mut self) {
+        self.cancelacion.store(true, Ordering::SeqCst);
+        if let Some(hilo) = self.hilo.take() {
+            let _ = hilo.join();
+        }
+    }
+}
+
+pub fn lanzar_colores_pendientes(ruta_bd: PathBuf, tx: Sender<AppEvento>) -> Result<ManejoColores> {
+    let cancelacion = Arc::new(AtomicBool::new(false));
+    let bandera = cancelacion.clone();
+    let hilo = thread::Builder::new()
+        .name("colores".to_string())
+        .spawn(move || {
+            let resultado = (|| -> Result<usize> {
+                let mut conn = bd::abrir(&ruta_bd)?;
+                bd::migrar(&mut conn)?;
+                procesar_colores_pendientes(&conn, Some(&bandera))
+            })();
+            match resultado {
+                Ok(procesados) if procesados > 0 => {
+                    info!(procesados, "colores de carátula calculados");
+                    let _ = tx.send(AppEvento::Notificacion(
+                        NivelAviso::Info,
+                        format!("{procesados} paletas de carátula calculadas"),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => warn!("no se pudieron calcular los colores: {error:#}"),
+            }
+        })
+        .context("no se pudo lanzar el hilo de colores")?;
+    Ok(ManejoColores {
+        cancelacion,
+        hilo: Some(hilo),
+    })
 }
 
 #[cfg(test)]
@@ -183,8 +280,9 @@ mod pruebas {
             .expect("leer")
             .expect("carátula");
         let temporal = tempfile::tempdir().expect("tempdir");
-        let ruta = cachear(&datos, 7, temporal.path()).expect("cachear");
+        let (ruta, colores) = cachear(&datos, 7, temporal.path()).expect("cachear");
         assert_eq!(ruta.file_name().and_then(|s| s.to_str()), Some("7.jpg"));
+        assert!(colores.is_some(), "la carátula debe dar colores dominantes");
         let imagen = image::open(&ruta).expect("abrir caché");
         assert_eq!(imagen.width(), LADO_CACHE);
         assert_eq!(imagen.height(), LADO_CACHE);

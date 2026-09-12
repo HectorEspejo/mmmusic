@@ -17,7 +17,9 @@ lru = "0.18"
 md5 = "0.8.1"
 mpris-server = "0.10"
 notify = "8"
+pipewire = { version = "0.10", features = ["v0_3_44"] }
 rand = "0.10"
+realfft = "3.5"
 ratatui = "0.30"
 ratatui-image = { version = "11", default-features = false, features = ["image-defaults", "crossterm"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

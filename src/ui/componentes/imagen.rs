@@ -17,18 +17,26 @@ use ratatui_image::{Resize, StatefulImage};
 use tracing::warn;
 
 use crate::app::AppEstado;
+use crate::visuales::paleta::{a_hex, colores_dominantes};
 
 pub const CAPACIDAD_CACHE: usize = 200;
 const LADO_MAXIMO_DECODIFICADO: u32 = 768;
 
 pub enum PeticionCaratula {
     Cargar { album_id: i64, ruta: PathBuf },
+    Colores { album_id: i64, ruta: PathBuf },
+}
+
+pub enum RespuestaCaratula {
+    Imagen(i64, DynamicImage),
+    Colores(i64, String),
 }
 
 pub struct CacheCaratulas {
     picker: Option<Picker>,
     entradas: LruCache<i64, StatefulProtocol>,
     pendientes: HashSet<i64>,
+    pendientes_colores: HashSet<i64>,
     tx: Option<Sender<PeticionCaratula>>,
 }
 
@@ -46,6 +54,7 @@ impl CacheCaratulas {
                 NonZeroUsize::new(CAPACIDAD_CACHE).unwrap_or(NonZeroUsize::MIN),
             ),
             pendientes: HashSet::new(),
+            pendientes_colores: HashSet::new(),
             tx: None,
         }
     }
@@ -86,25 +95,72 @@ impl CacheCaratulas {
             self.pendientes.remove(&album_id);
         }
     }
+
+    /// Pide los colores dominantes de una carátula cacheada; el hilo auxiliar
+    /// los devuelve por el canal de respuestas.
+    pub fn solicitar_colores(&mut self, album_id: i64, ruta: &str) {
+        if self.pendientes_colores.contains(&album_id) {
+            return;
+        }
+        let Some(tx) = self.tx.as_ref() else {
+            return;
+        };
+        let ruta = PathBuf::from(ruta);
+        if !ruta.exists() {
+            return;
+        }
+        self.pendientes_colores.insert(album_id);
+        if tx
+            .send(PeticionCaratula::Colores { album_id, ruta })
+            .is_err()
+        {
+            self.pendientes_colores.remove(&album_id);
+        }
+    }
 }
 
-pub fn lanzar_worker(tx_resultados: Sender<(i64, DynamicImage)>) -> Sender<PeticionCaratula> {
+pub fn lanzar_worker(tx_resultados: Sender<RespuestaCaratula>) -> Sender<PeticionCaratula> {
     let (tx_peticiones, rx_peticiones) = mpsc::channel();
     thread::Builder::new()
         .name("caratulas".to_string())
         .spawn(move || {
-            while let Ok(PeticionCaratula::Cargar { album_id, ruta }) = rx_peticiones.recv() {
-                match image::open(&ruta) {
-                    Ok(imagen) => {
-                        let redimensionada =
-                            imagen.thumbnail(LADO_MAXIMO_DECODIFICADO, LADO_MAXIMO_DECODIFICADO);
-                        if tx_resultados.send((album_id, redimensionada)).is_err() {
-                            break;
+            while let Ok(peticion) = rx_peticiones.recv() {
+                match peticion {
+                    PeticionCaratula::Cargar { album_id, ruta } => match image::open(&ruta) {
+                        Ok(imagen) => {
+                            let redimensionada = imagen
+                                .thumbnail(LADO_MAXIMO_DECODIFICADO, LADO_MAXIMO_DECODIFICADO);
+                            if tx_resultados
+                                .send(RespuestaCaratula::Imagen(album_id, redimensionada))
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
-                    }
-                    Err(error) => {
-                        warn!(ruta = %ruta.display(), "carátula ilegible: {error}");
-                    }
+                        Err(error) => {
+                            warn!(ruta = %ruta.display(), "carátula ilegible: {error}");
+                        }
+                    },
+                    PeticionCaratula::Colores { album_id, ruta } => match image::open(&ruta) {
+                        Ok(imagen) => {
+                            if let Some(colores) = colores_dominantes(&imagen) {
+                                let texto = colores
+                                    .iter()
+                                    .map(|color| a_hex(*color))
+                                    .collect::<Vec<_>>()
+                                    .join(",");
+                                if tx_resultados
+                                    .send(RespuestaCaratula::Colores(album_id, texto))
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            warn!(ruta = %ruta.display(), "carátula ilegible: {error}");
+                        }
+                    },
                 }
             }
         })

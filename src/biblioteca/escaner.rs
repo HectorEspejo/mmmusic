@@ -190,6 +190,7 @@ fn ejecutar_interno(
     let mut procesadas = 0u64;
     let mut cancelado = false;
     let mut grupos: HashSet<GrupoCandidato> = HashSet::new();
+    let mut releidas: HashSet<String> = HashSet::new();
     for ruta in &ficheros {
         if cancelacion.load(Ordering::SeqCst) {
             cancelado = true;
@@ -198,12 +199,14 @@ fn ejecutar_interno(
         match procesar_fichero(&tx_bd, ruta, escaneo_id, modo.es_completo()) {
             Ok((Resultado::Nueva, grupo)) => {
                 resumen.nuevas += 1;
+                releidas.insert(ruta.to_string_lossy().to_string());
                 if let Some(grupo) = grupo {
                     grupos.insert(grupo);
                 }
             }
             Ok((Resultado::Actualizada, grupo)) => {
                 resumen.actualizadas += 1;
+                releidas.insert(ruta.to_string_lossy().to_string());
                 if let Some(grupo) = grupo {
                     grupos.insert(grupo);
                 }
@@ -242,7 +245,7 @@ fn ejecutar_interno(
     } else {
         grupos.into_iter().collect()
     };
-    recopilatorios::consolidar(conn, &grupos)?;
+    recopilatorios::consolidar(conn, &grupos, &releidas)?;
     limpiar_huerfanos(conn)?;
 
     match caratulas::procesar_pendientes(conn, dir_caratulas, Some(cancelacion)) {
@@ -439,7 +442,7 @@ fn procesar_fichero(
     }
 }
 
-fn asegurar_artista(conn: &Connection, nombre: &str) -> Result<i64> {
+pub(crate) fn asegurar_artista(conn: &Connection, nombre: &str) -> Result<i64> {
     let norm = etiquetas::normalizar(nombre);
     conn.query_row(
         "INSERT INTO ARTISTAS (nombre, nombre_norm, creado_en) VALUES (?1, ?2, ?3)
@@ -451,7 +454,7 @@ fn asegurar_artista(conn: &Connection, nombre: &str) -> Result<i64> {
     .with_context(|| format!("no se pudo registrar el artista {nombre}"))
 }
 
-fn asegurar_album(
+pub(crate) fn asegurar_album(
     conn: &Connection,
     artista_id: i64,
     etiquetas: &etiquetas::EtiquetasResueltas,

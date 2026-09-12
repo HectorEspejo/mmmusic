@@ -18,6 +18,7 @@ pub struct Config {
     pub interfaz: ConfigInterfaz,
     pub tema: ConfigTema,
     pub scrobbling: ConfigScrobbling,
+    pub visuales: ConfigVisuales,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +127,57 @@ impl Default for ConfigScrobbling {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FuentePaleta {
+    #[default]
+    Tema,
+    Caratula,
+}
+
+impl FuentePaleta {
+    pub fn como_str(self) -> &'static str {
+        match self {
+            FuentePaleta::Tema => "tema",
+            FuentePaleta::Caratula => "caratula",
+        }
+    }
+
+    pub fn desde_str(texto: &str) -> Option<Self> {
+        match texto {
+            "tema" => Some(FuentePaleta::Tema),
+            "caratula" => Some(FuentePaleta::Caratula),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigVisuales {
+    pub activo: bool,
+    pub fps: u16,
+    pub predeterminada: String,
+    pub paleta: FuentePaleta,
+    pub mini_espectro: bool,
+    pub autoinicio_min: u64,
+    pub nodo: String,
+}
+
+impl Default for ConfigVisuales {
+    fn default() -> Self {
+        Self {
+            activo: true,
+            fps: 30,
+            predeterminada: "espectro".to_string(),
+            paleta: FuentePaleta::Tema,
+            mini_espectro: true,
+            autoinicio_min: 0,
+            nodo: "mmmusic".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CargaConfig {
     pub config: Config,
@@ -185,6 +237,28 @@ impl Config {
         if !(14..=40).contains(&ancho) {
             warn!(valor = ancho, "ancho_sidebar fuera de rango; se usa 18");
             self.interfaz.ancho_sidebar = 18;
+        }
+        if !(15..=60).contains(&self.visuales.fps) {
+            warn!(
+                valor = self.visuales.fps,
+                "visuales.fps fuera de rango; se usa 30"
+            );
+            self.visuales.fps = 30;
+        }
+        if self.visuales.nodo.trim().is_empty() {
+            warn!("visuales.nodo vacío; se usa mmmusic");
+            self.visuales.nodo = "mmmusic".to_string();
+        }
+        if self.visuales.predeterminada.trim().is_empty() {
+            warn!("visuales.predeterminada vacía; se usa espectro");
+            self.visuales.predeterminada = "espectro".to_string();
+        }
+        if self.visuales.autoinicio_min > 1_440 {
+            warn!(
+                valor = self.visuales.autoinicio_min,
+                "visuales.autoinicio_min fuera de rango; se acota a 1440"
+            );
+            self.visuales.autoinicio_min = 1_440;
         }
         if self.biblioteca.carpetas.is_empty() {
             warn!("biblioteca.carpetas vacía; se usa ~/Music");
@@ -376,6 +450,28 @@ ancho_sidebar = 5
         assert_eq!(config.reproductor.volumen_inicial, 100);
         assert_eq!(config.reproductor.salto_corto_s, 5);
         assert_eq!(config.interfaz.ancho_sidebar, 18);
+    }
+
+    #[test]
+    fn visuales_se_parsean_y_acotan() {
+        let texto = r#"
+[visuales]
+activo = false
+fps = 200
+predeterminada = ""
+paleta = "caratula"
+mini_espectro = false
+autoinicio_min = 99999
+nodo = ""
+"#;
+        let mut config: Config = toml::from_str(texto).expect("parseo");
+        assert!(!config.visuales.activo);
+        assert_eq!(config.visuales.paleta, FuentePaleta::Caratula);
+        config.validar();
+        assert_eq!(config.visuales.fps, 30);
+        assert_eq!(config.visuales.nodo, "mmmusic");
+        assert_eq!(config.visuales.predeterminada, "espectro");
+        assert_eq!(config.visuales.autoinicio_min, 1_440);
     }
 
     #[test]
