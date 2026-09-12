@@ -35,6 +35,10 @@ pub struct Iconos {
     pub silencio: &'static str,
     pub nota: &'static str,
     pub reproducida: &'static str,
+    pub scrobbling_enviado: &'static str,
+    pub scrobbling_pendiente: &'static str,
+    pub scrobbling_error: &'static str,
+    pub corazon: &'static str,
 }
 
 impl Iconos {
@@ -53,6 +57,10 @@ impl Iconos {
                 silencio: "\u{f026}",
                 nota: "♪",
                 reproducida: "▶",
+                scrobbling_enviado: "↑",
+                scrobbling_pendiente: "…",
+                scrobbling_error: "!",
+                corazon: "♥",
             },
             ModoIconos::Ascii => Self {
                 reproducir: ">",
@@ -67,6 +75,10 @@ impl Iconos {
                 silencio: "sil",
                 nota: "♪",
                 reproducida: ">",
+                scrobbling_enviado: "sc:ok",
+                scrobbling_pendiente: "sc:",
+                scrobbling_error: "sc:err",
+                corazon: "♥",
             },
         }
     }

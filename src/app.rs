@@ -18,6 +18,8 @@ use crate::config::Config;
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use crate::reproductor::estado::{Estado, EstadoReproduccion};
 use crate::reproductor::{ComandoReproductor, ManejoReproductor};
+use crate::scrobbling::estado::EstadoScrobbling;
+use crate::scrobbling::{ComandoScrobbling, ManejoScrobbling};
 use crate::tema::{self, Paleta};
 use crate::ui::Iconos;
 use crate::ui::componentes::imagen::CacheCaratulas;
@@ -185,6 +187,7 @@ pub struct ContextoApp<'a> {
     pub ruta_bd: &'a Path,
     pub dir_caratulas: &'a Path,
     pub reproductor: &'a ManejoReproductor,
+    pub scrobbling: &'a ManejoScrobbling,
 }
 
 enum Contexto {
@@ -203,6 +206,7 @@ pub struct AppEstado {
     pub foco: Foco,
     pub pila: Vec<(Vista, Pantalla)>,
     pub estado_reproductor: EstadoReproduccion,
+    pub estado_scrobbling: EstadoScrobbling,
     pub total_pistas: i64,
     pub playlists: Vec<PlaylistResumen>,
     pub pistas: Vec<PistaListado>,
@@ -256,6 +260,7 @@ impl AppEstado {
             foco: Foco::Contenido,
             pila: Vec::new(),
             estado_reproductor,
+            estado_scrobbling: EstadoScrobbling::default(),
             total_pistas,
             playlists: Vec::new(),
             pistas: Vec::new(),
@@ -351,6 +356,7 @@ impl AppEstado {
             }
             AppEvento::Notificacion(nivel, texto) => self.notificar(nivel, texto),
             AppEvento::CaratulaLista(_album_id) => {}
+            AppEvento::Scrobbling(estado) => self.estado_scrobbling = estado,
             AppEvento::Salir => {
                 self.debe_salir = true;
             }
@@ -404,6 +410,12 @@ impl AppEstado {
                 }
             }
             Accion::Reescanear => self.iniciar_escaneo(ctx),
+            Accion::EnviarScrobbles => {
+                ctx.scrobbling.enviar(ComandoScrobbling::EnviarAhora);
+                if self.estado_scrobbling.pendientes() > 0 {
+                    self.notificar(NivelAviso::Info, "Enviando pendientes de scrobbling…");
+                }
+            }
             Accion::RecargarTema => self.recargar_tema(),
             Accion::TeclaG => {
                 if self.pendiente_g {

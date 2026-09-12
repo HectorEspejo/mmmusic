@@ -6,8 +6,12 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::biblioteca::escaner::{self, ModoEscaneo};
+use crate::biblioteca::{bd, consultas};
 use crate::config::{Config, Rutas};
+use crate::credenciales;
 use crate::eventos::{AppEvento, EventoEscaneo};
+use crate::scrobbling::SERVICIO_LISTENBRAINZ;
+use crate::scrobbling::listenbrainz::ClienteListenBrainz;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +33,8 @@ pub enum Comando {
         #[arg(long)]
         completo: bool,
     },
+    /// Comprobar las credenciales de los servicios de scrobbling
+    ProbarServicios,
 }
 
 pub fn ejecutar_reescanear(completo: bool) -> Result<u8> {
@@ -82,4 +88,57 @@ pub fn ejecutar_reescanear(completo: bool) -> Result<u8> {
     }
     let _ = manejo.esperar(Duration::from_secs(10));
     Ok(codigo)
+}
+
+pub fn ejecutar_probar_servicios() -> Result<u8> {
+    let rutas = Rutas::detectar()?;
+    rutas.crear_directorios()?;
+    let carga = credenciales::cargar(&rutas.credenciales)?;
+    if carga.permisos_corregidos {
+        println!(
+            "Aviso: las credenciales eran legibles por otros usuarios; permisos corregidos a 600"
+        );
+    }
+    let cred = carga.credenciales;
+    let mut conn = bd::abrir(&rutas.base_datos)?;
+    bd::migrar(&mut conn)?;
+
+    let mut configurados = 0usize;
+    let mut error_red = false;
+    let mut error_configuracion = false;
+
+    if let Some(token) = cred.token_listenbrainz() {
+        configurados += 1;
+        let cliente = ClienteListenBrainz::nuevo(Some(token.to_string()));
+        match cliente.validar_token() {
+            Ok(usuario) => {
+                println!("ListenBrainz: OK ({usuario})");
+                consultas::envios::reprogramar_errores_auth(&conn, SERVICIO_LISTENBRAINZ)?;
+                consultas::envios::limpiar_errores_auth(&conn, SERVICIO_LISTENBRAINZ)?;
+            }
+            Err(fallo) => {
+                println!("ListenBrainz: error — {}", cred.redactar(&fallo.mensaje));
+                if fallo.status == 0 {
+                    error_red = true;
+                } else {
+                    error_configuracion = true;
+                }
+            }
+        }
+    } else {
+        println!("ListenBrainz: no configurado");
+    }
+
+    println!("Last.fm: no configurado");
+
+    if configurados == 0 {
+        return Ok(1);
+    }
+    if error_red {
+        return Ok(2);
+    }
+    if error_configuracion {
+        return Ok(1);
+    }
+    Ok(0)
 }

@@ -13,6 +13,7 @@ pub enum Accion {
     FocoSiguiente,
     FocoAnterior,
     Reescanear,
+    EnviarScrobbles,
     RecargarTema,
     EnfocarBuscar,
     Abajo,
@@ -60,6 +61,7 @@ pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
         return match tecla.code {
             KeyCode::Char('c') => Some(Accion::SalirInmediato),
             KeyCode::Char('r') => Some(Accion::Reescanear),
+            KeyCode::Char('s') => Some(Accion::EnviarScrobbles),
             KeyCode::Char('d') => Some(Accion::MediaAbajo),
             KeyCode::Char('u') => Some(Accion::MediaArriba),
             _ => None,

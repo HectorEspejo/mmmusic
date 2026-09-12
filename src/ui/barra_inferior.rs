@@ -9,6 +9,8 @@ use crate::reproductor::estado::Repeticion;
 use crate::ui::componentes::imagen;
 use crate::ui::formatear_ms;
 
+const ANCHO_COMPACTO: u16 = 70;
+
 pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: bool) {
     let estilo = Style::new().fg(app.paleta.texto).bg(app.paleta.fondo);
     let bloque = Block::new()
@@ -20,6 +22,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
     if interior.height == 0 || interior.width < 10 {
         return;
     }
+    let compacto_ancho = area.width < ANCHO_COMPACTO;
 
     let estado = app.estado_reproductor.clone();
     let pista = estado.pista_actual.as_ref();
@@ -31,7 +34,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
         .unwrap_or_default();
     let album_id = pista.map(|p| p.album_id);
 
-    let linea_controles = controles(app);
+    let linea_controles = controles(app, indicador_scrobbling(app, compacto_ancho));
     let ancho_controles = (linea_controles.width() as u16 + 3).min(interior.width / 2);
 
     if compacto {
@@ -119,7 +122,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
     );
 }
 
-fn controles(app: &AppEstado) -> Line<'static> {
+fn controles(app: &AppEstado, indicador: Option<Span<'static>>) -> Line<'static> {
     let estado = &app.estado_reproductor;
     let icono_estado = if estado.sonando() {
         app.iconos.pausa
@@ -148,7 +151,7 @@ fn controles(app: &AppEstado) -> Line<'static> {
     } else {
         app.iconos.volumen
     };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!("{} {}", app.iconos.anterior, icono_estado),
             Style::new().fg(app.paleta.texto),
@@ -165,5 +168,40 @@ fn controles(app: &AppEstado) -> Line<'static> {
             format!("  {} {}%", icono_volumen, estado.volumen),
             Style::new().fg(app.paleta.texto),
         ),
-    ])
+    ];
+    if let Some(indicador) = indicador {
+        spans.push(Span::styled("  ", Style::new()));
+        spans.push(indicador);
+    }
+    Line::from(spans)
+}
+
+fn indicador_scrobbling(app: &AppEstado, compacto_ancho: bool) -> Option<Span<'static>> {
+    let estado = &app.estado_scrobbling;
+    if !estado.activo() {
+        return None;
+    }
+    if estado.error().is_some() {
+        return Some(Span::styled(
+            app.iconos.scrobbling_error,
+            Style::new()
+                .fg(app.paleta.error)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if compacto_ancho {
+        return None;
+    }
+    if estado.pendientes() > 0 {
+        return Some(Span::styled(
+            format!("{}{}", app.iconos.scrobbling_pendiente, estado.pendientes()),
+            Style::new().fg(app.paleta.aviso),
+        ));
+    }
+    estado.ultimo_envio().map(|_| {
+        Span::styled(
+            app.iconos.scrobbling_enviado,
+            Style::new().fg(app.paleta.progreso),
+        )
+    })
 }

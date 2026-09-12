@@ -1199,12 +1199,13 @@ fn condicion_busqueda(terminos: &[String], columnas: &[&str]) -> (String, Vec<St
 pub mod historial {
     use super::*;
 
-    pub fn registrar_inicio(conn: &Connection, pista_id: i64) -> Result<i64> {
+    pub fn registrar_inicio(conn: &Connection, pista_id: i64) -> Result<(i64, String)> {
+        let iniciado_en = bd::ahora_iso();
         conn.query_row(
             "INSERT INTO HISTORIAL_REPRODUCCION (pista_id, reproducido_en, completada)
              VALUES (?1, ?2, 0) RETURNING id",
-            params![pista_id, bd::ahora_iso()],
-            |fila| fila.get(0),
+            params![pista_id, iniciado_en],
+            |fila| Ok((fila.get(0)?, iniciado_en.clone())),
         )
         .context("no se pudo registrar el inicio de reproducción")
     }
@@ -1215,6 +1216,195 @@ pub mod historial {
             [historial_id],
         )
         .context("no se pudo marcar el historial como completado")?;
+        Ok(())
+    }
+}
+
+pub mod envios {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EnvioPendiente {
+        pub id: i64,
+        pub tipo: String,
+        pub pista_id: i64,
+        pub historial_id: Option<i64>,
+        pub reproducido_en: Option<String>,
+        pub intentos: i64,
+        pub titulo: String,
+        pub artista: String,
+        pub album: String,
+        pub duracion_ms: i64,
+    }
+
+    pub fn encolar(
+        conn: &Connection,
+        servicio: &str,
+        tipo: &str,
+        pista_id: i64,
+        historial_id: Option<i64>,
+        reproducido_en: Option<&str>,
+    ) -> Result<i64> {
+        let tx = conn
+            .unchecked_transaction()
+            .context("no se pudo iniciar la transacción del envío")?;
+        if tipo != "scrobble" {
+            tx.execute(
+                "UPDATE ENVIOS
+                    SET estado = 'descartado', error_msg = 'reemplazado por un cambio posterior'
+                  WHERE servicio = ?1 AND pista_id = ?2
+                    AND tipo IN ('love', 'unlove')
+                    AND estado IN ('pendiente', 'error')",
+                params![servicio, pista_id],
+            )
+            .context("no se pudo descartar el love anterior")?;
+        }
+        let ahora = bd::ahora_iso();
+        let id = tx
+            .query_row(
+                "INSERT INTO ENVIOS
+                    (servicio, tipo, pista_id, historial_id, reproducido_en, estado,
+                     intentos, proximo_intento_en, creado_en)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pendiente', 0, ?6, ?6)
+                 RETURNING id",
+                params![
+                    servicio,
+                    tipo,
+                    pista_id,
+                    historial_id,
+                    reproducido_en,
+                    ahora
+                ],
+                |fila| fila.get(0),
+            )
+            .with_context(|| format!("no se pudo encolar el envío {tipo} para {servicio}"))?;
+        tx.commit().context("no se pudo confirmar el envío")?;
+        Ok(id)
+    }
+
+    pub fn pendientes(
+        conn: &Connection,
+        servicio: &str,
+        limite: usize,
+    ) -> Result<Vec<EnvioPendiente>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT e.id, e.tipo, e.pista_id, e.historial_id, e.reproducido_en, e.intentos,
+                        p.titulo, ar.nombre, al.titulo, p.duracion_ms
+                   FROM ENVIOS e
+                   JOIN PISTAS p ON p.id = e.pista_id
+                   JOIN ARTISTAS ar ON ar.id = p.artista_id
+                   JOIN ALBUMES al ON al.id = p.album_id
+                  WHERE e.servicio = ?1
+                    AND e.estado IN ('pendiente', 'error')
+                    AND e.proximo_intento_en <= ?2
+                  ORDER BY e.reproducido_en IS NULL, e.reproducido_en, e.id
+                  LIMIT ?3",
+            )
+            .context("no se pudieron preparar los envíos pendientes")?;
+        sentencia
+            .query_map(params![servicio, bd::ahora_iso(), limite as i64], |fila| {
+                Ok(EnvioPendiente {
+                    id: fila.get(0)?,
+                    tipo: fila.get(1)?,
+                    pista_id: fila.get(2)?,
+                    historial_id: fila.get(3)?,
+                    reproducido_en: fila.get(4)?,
+                    intentos: fila.get(5)?,
+                    titulo: fila.get(6)?,
+                    artista: fila.get(7)?,
+                    album: fila.get(8)?,
+                    duracion_ms: fila.get(9)?,
+                })
+            })
+            .context("no se pudieron listar los envíos pendientes")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer los envíos pendientes")
+    }
+
+    pub fn marcar_enviado(conn: &Connection, id: i64) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS
+                SET estado = 'enviado', enviado_en = ?1, error_msg = NULL
+              WHERE id = ?2",
+            params![bd::ahora_iso(), id],
+        )
+        .context("no se pudo marcar el envío como enviado")?;
+        Ok(())
+    }
+
+    pub fn marcar_enviados(conn: &Connection, ids: &[i64]) -> Result<()> {
+        let tx = conn
+            .unchecked_transaction()
+            .context("no se pudo iniciar la transacción de envíos")?;
+        for id in ids {
+            tx.execute(
+                "UPDATE ENVIOS
+                    SET estado = 'enviado', enviado_en = ?1, error_msg = NULL
+                  WHERE id = ?2",
+                params![bd::ahora_iso(), id],
+            )
+            .context("no se pudo marcar el envío como enviado")?;
+        }
+        tx.commit().context("no se pudo confirmar los envíos")?;
+        Ok(())
+    }
+
+    pub fn marcar_error(
+        conn: &Connection,
+        id: i64,
+        mensaje: &str,
+        proximo_intento_en: &str,
+        intentos: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS
+                SET estado = 'error', error_msg = ?1, proximo_intento_en = ?2, intentos = ?3
+              WHERE id = ?4",
+            params![mensaje, proximo_intento_en, intentos, id],
+        )
+        .context("no se pudo marcar el error del envío")?;
+        Ok(())
+    }
+
+    pub fn descartar(conn: &Connection, id: i64, motivo: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS SET estado = 'descartado', error_msg = ?1 WHERE id = ?2",
+            params![motivo, id],
+        )
+        .context("no se pudo descartar el envío")?;
+        Ok(())
+    }
+
+    pub fn contar_pendientes(conn: &Connection, servicio: &str) -> Result<u32> {
+        conn.query_row(
+            "SELECT count(*) FROM ENVIOS WHERE servicio = ?1 AND estado IN ('pendiente', 'error')",
+            [servicio],
+            |fila| fila.get::<_, i64>(0),
+        )
+        .map(|total| total.max(0) as u32)
+        .context("no se pudieron contar los envíos pendientes")
+    }
+
+    pub fn reprogramar_errores_auth(conn: &Connection, servicio: &str) -> Result<usize> {
+        let filas = conn
+            .execute(
+                "UPDATE ENVIOS
+                    SET estado = 'pendiente', proximo_intento_en = ?1
+                  WHERE servicio = ?2 AND estado = 'error' AND error_msg LIKE 'auth:%'",
+                params![bd::ahora_iso(), servicio],
+            )
+            .context("no se pudieron reprogramar los errores de autenticación")?;
+        Ok(filas)
+    }
+
+    pub fn limpiar_errores_auth(conn: &Connection, servicio: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS SET error_msg = NULL
+              WHERE servicio = ?1 AND error_msg LIKE 'auth:%'",
+            [servicio],
+        )
+        .context("no se pudieron limpiar los errores de autenticación")?;
         Ok(())
     }
 }

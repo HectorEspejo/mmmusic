@@ -1,6 +1,7 @@
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::reproductor::estado::EstadoReproduccion;
+use crate::scrobbling::estado::EstadoScrobbling;
 use crate::tema::Paleta;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,5 +48,6 @@ pub enum AppEvento {
     TemaActualizado(Paleta),
     Notificacion(NivelAviso, String),
     CaratulaLista(i64),
+    Scrobbling(EstadoScrobbling),
     Salir,
 }

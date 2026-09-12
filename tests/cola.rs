@@ -110,8 +110,9 @@ fn reproduce_persiste_y_restaura_la_cola() {
     assert_eq!(ids.len(), 3);
 
     let (tx, rx) = mpsc::channel();
+    let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
     let (manejo, _watch) =
-        reproductor::lanzar(ruta_bd.clone(), 70, tx).expect("lanzar reproductor");
+        reproductor::lanzar(ruta_bd.clone(), 70, tx, tx_scrobbling).expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
         pistas: ids.clone(),
         indice: 1,
@@ -174,7 +175,9 @@ fn tres_fallos_seguidos_pasan_a_detenido() {
     drop(conn);
 
     let (tx, rx) = mpsc::channel();
-    let (manejo, _watch) = reproductor::lanzar(ruta_bd, 50, tx).expect("lanzar reproductor");
+    let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
+    let (manejo, _watch) =
+        reproductor::lanzar(ruta_bd, 50, tx, tx_scrobbling).expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
         pistas: vec![1, 2, 3],
         indice: 0,

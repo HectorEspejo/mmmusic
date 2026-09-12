@@ -12,9 +12,11 @@ use mmmusic::biblioteca::escaner::ModoEscaneo;
 use mmmusic::biblioteca::{bd, consultas};
 use mmmusic::cli::{self, Cli, Comando};
 use mmmusic::config::{Config, Rutas};
+use mmmusic::credenciales;
 use mmmusic::eventos::{AppEvento, NivelAviso};
 use mmmusic::mpris;
 use mmmusic::reproductor::{self, ManejoReproductor};
+use mmmusic::scrobbling;
 use mmmusic::tema;
 use mmmusic::tema::VigilanteTema;
 use mmmusic::ui;
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let resultado: Result<u8> = match cli.comando {
         Some(Comando::Reescanear { completo }) => cli::ejecutar_reescanear(completo),
+        Some(Comando::ProbarServicios) => cli::ejecutar_probar_servicios(),
         None => ejecutar_tui().map(|()| 0),
     };
     match resultado {
@@ -88,10 +91,25 @@ fn ejecutar_tui() -> Result<()> {
         None
     };
 
+    let carga_credenciales = credenciales::cargar(&rutas.credenciales)?;
+    if carga_credenciales.permisos_corregidos {
+        app.notificar(
+            NivelAviso::Aviso,
+            "Las credenciales eran legibles por otros usuarios; permisos corregidos a 600",
+        );
+    }
+    let (manejo_scrobbling, _rx_scrobbling) = scrobbling::lanzar(
+        rutas.base_datos.clone(),
+        rutas.credenciales.clone(),
+        carga.config.scrobbling.clone(),
+        carga_credenciales.credenciales,
+        tx_app.clone(),
+    )?;
     let (manejo_reproductor, rx_estado) = reproductor::lanzar(
         rutas.base_datos.clone(),
         carga.config.reproductor.volumen_inicial,
         tx_app.clone(),
+        manejo_scrobbling.emisor(),
     )?;
     mpris::lanzar(rx_estado, manejo_reproductor.emisor(), tx_app.clone())?;
     let mut terminal = ui::iniciar()?;
@@ -107,6 +125,7 @@ fn ejecutar_tui() -> Result<()> {
             ruta_bd: &rutas.base_datos,
             dir_caratulas: &rutas.cache_caratulas,
             reproductor: &manejo_reproductor,
+            scrobbling: &manejo_scrobbling,
         };
         app.refrescar_contadores(&ctx);
         app.refrescar_vista(Vista::Inicio, &ctx);
@@ -129,10 +148,12 @@ fn ejecutar_tui() -> Result<()> {
         ruta_bd: &rutas.base_datos,
         dir_caratulas: &rutas.cache_caratulas,
         reproductor: &manejo_reproductor,
+        scrobbling: &manejo_scrobbling,
     };
     let resultado = bucle(&mut terminal, &mut app, &recursos);
     app.cancelar_escaneo();
     manejo_reproductor.apagar();
+    manejo_scrobbling.apagar();
     ui::restaurar();
     resultado
 }
@@ -145,6 +166,7 @@ struct RecursosBucle<'a> {
     ruta_bd: &'a Path,
     dir_caratulas: &'a Path,
     reproductor: &'a ManejoReproductor,
+    scrobbling: &'a scrobbling::ManejoScrobbling,
 }
 
 fn bucle(
@@ -168,6 +190,7 @@ fn bucle(
             ruta_bd: recursos.ruta_bd,
             dir_caratulas: recursos.dir_caratulas,
             reproductor: recursos.reproductor,
+            scrobbling: recursos.scrobbling,
         };
         app.manejar(evento, &ctx);
         if app.debe_salir {

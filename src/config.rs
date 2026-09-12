@@ -17,6 +17,7 @@ pub struct Config {
     pub reproductor: ConfigReproductor,
     pub interfaz: ConfigInterfaz,
     pub tema: ConfigTema,
+    pub scrobbling: ConfigScrobbling,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +108,24 @@ impl Default for ConfigTema {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigScrobbling {
+    pub listenbrainz: bool,
+    pub lastfm: bool,
+    pub now_playing: bool,
+}
+
+impl Default for ConfigScrobbling {
+    fn default() -> Self {
+        Self {
+            listenbrainz: false,
+            lastfm: false,
+            now_playing: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CargaConfig {
     pub config: Config,
@@ -189,6 +208,7 @@ impl Config {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rutas {
     pub config: PathBuf,
+    pub credenciales: PathBuf,
     pub base_datos: PathBuf,
     pub cache_caratulas: PathBuf,
     pub dir_logs: PathBuf,
@@ -205,6 +225,7 @@ impl Rutas {
         let dir_tema = usuario.home_dir().join(CARPETA_TEMA_OMARCHY);
         Ok(Self {
             config: proyecto.config_dir().join("config.toml"),
+            credenciales: proyecto.config_dir().join("credenciales.toml"),
             base_datos: proyecto.data_dir().join("mmmusic.db"),
             cache_caratulas: proyecto.cache_dir().join("caratulas"),
             dir_logs: proyecto
@@ -219,6 +240,9 @@ impl Rutas {
     pub fn crear_directorios(&self) -> Result<()> {
         let mut directorios = vec![self.cache_caratulas.clone(), self.dir_logs.clone()];
         if let Some(padre) = self.base_datos.parent() {
+            directorios.push(padre.to_path_buf());
+        }
+        if let Some(padre) = self.credenciales.parent() {
             directorios.push(padre.to_path_buf());
         }
         for dir in directorios {
