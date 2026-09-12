@@ -1,0 +1,15 @@
+# Artefactos de compilación
+/target
+
+# Logs y ficheros temporales
+*.log
+*.tmp
+
+# Variables de entorno locales
+.env
+
+# Editores y sistema
+.idea/
+.vscode/
+*.swp
+.DS_Store

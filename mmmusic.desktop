@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=mmmusic
+GenericName=Reproductor de música
+Comment=Reproductor de música para terminal con MPRIS
+Exec=mmmusic
+Terminal=true
+Categories=Audio;Music;Player;AudioVideo;
+Keywords=musica;audio;reproductor;tui;terminal;
+StartupNotify=false

@@ -1,0 +1,36 @@
+# Configuración de ejemplo de mmmusic.
+# Copia este fichero a ~/.config/mmmusic/config.toml y ajusta lo que necesites.
+# Si no existe, mmmusic lo crea automáticamente con estos valores.
+
+[biblioteca]
+# Carpetas que se indexan (se expanden ~ y variables de entorno).
+# Puedes indicar varias raíces.
+carpetas = ["~/Music"]
+# Lanza un escaneo incremental al arrancar sin bloquear la interfaz.
+escanear_al_arrancar = true
+# Carpeta donde se exportan y desde la que se resuelven las playlists M3U8.
+carpeta_playlists = "~/Music/Playlists"
+
+[reproductor]
+# Volumen inicial (0-100); después manda el último volumen guardado.
+volumen_inicial = 80
+# Saltos de , / . (segundos).
+salto_corto_s = 5
+# Saltos de < / > (segundos).
+salto_largo_s = 30
+
+[interfaz]
+# false desactiva por completo el renderizado de carátulas.
+caratulas = true
+# "nerd" usa iconos Nerd Font; "ascii" usa texto.
+iconos = "nerd"
+# Ancho de la barra lateral en columnas (entre 14 y 40).
+ancho_sidebar = 18
+
+[tema]
+# "omarchy" lee ~/.config/omarchy/current/theme/alacritty.toml.
+# "terminal" usa la paleta ANSI del emulador.
+fuente = "omarchy"
+# Nombres de color ANSI del tema para el acento y el progreso.
+acento = "blue"
+progreso = "green"
