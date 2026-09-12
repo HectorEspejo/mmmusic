@@ -237,6 +237,8 @@ pub struct AppEstado {
     pub ultima_busqueda: String,
     pub seleccion: usize,
     pub seleccion_cola: usize,
+    pub bloque_inicio: usize,
+    pub columna_inicio: usize,
     pub columnas_rejilla: usize,
     pub escaneo_activo: Option<ProgresoEscaneo>,
     pub manejo_escaneo: Option<ManejoEscaneo>,
@@ -292,6 +294,8 @@ impl AppEstado {
             ultima_busqueda: String::new(),
             seleccion: 0,
             seleccion_cola: 0,
+            bloque_inicio: 0,
+            columna_inicio: 0,
             columnas_rejilla: 4,
             escaneo_activo: None,
             manejo_escaneo: None,
@@ -397,6 +401,10 @@ impl AppEstado {
                 self.pila.clear();
                 self.pantalla = Pantalla::Lista;
                 self.seleccion = 0;
+                if vista == Vista::Inicio {
+                    self.bloque_inicio = 0;
+                    self.columna_inicio = 0;
+                }
                 self.vista = vista;
                 self.refrescar_vista(vista, ctx);
             }
@@ -440,12 +448,16 @@ impl AppEstado {
                 self.busqueda_enfocada = true;
                 self.foco = Foco::Contenido;
             }
+            Accion::Abajo if self.vista == Vista::Inicio => self.mover_inicio(ctx, 1, 0),
             Accion::Abajo => self.mover_seleccion(ctx, 1),
+            Accion::Arriba if self.vista == Vista::Inicio => self.mover_inicio(ctx, -1, 0),
             Accion::Arriba => self.mover_seleccion(ctx, -1),
+            Accion::Derecha if self.vista == Vista::Inicio => self.mover_inicio(ctx, 0, 1),
             Accion::Derecha => match self.vista_pantalla_rejilla() {
                 true => self.mover_seleccion(ctx, 1),
                 false => self.abrir_seleccion(ctx),
             },
+            Accion::Izquierda if self.vista == Vista::Inicio => self.mover_inicio(ctx, 0, -1),
             Accion::Izquierda => match self.vista_pantalla_rejilla() {
                 true => self.mover_seleccion(ctx, -1),
                 false => self.volver(),
@@ -783,8 +795,70 @@ impl AppEstado {
             delta
         };
         self.seleccion = mover_indice(self.seleccion, total - 1, paso);
+        if self.vista == Vista::Inicio {
+            self.sincronizar_inicio_desde_seleccion();
+        }
         if self.vista == Vista::Pistas {
             self.asegurar_pagina(ctx);
+        }
+    }
+
+    fn inicio_bloque_len(&self, bloque: usize) -> usize {
+        match bloque {
+            0 => self.inicio.recientes.len(),
+            1 => self.inicio.anadidos.len(),
+            _ => self.inicio.redescubre.len(),
+        }
+    }
+
+    fn mover_inicio(&mut self, _ctx: &ContextoApp<'_>, delta_bloque: isize, delta_columna: isize) {
+        if self.foco != Foco::Contenido {
+            return;
+        }
+        if delta_bloque != 0 {
+            self.bloque_inicio = (self.bloque_inicio as isize + delta_bloque).clamp(0, 2) as usize;
+            let len = self.inicio_bloque_len(self.bloque_inicio);
+            self.columna_inicio = self.columna_inicio.min(len.saturating_sub(1));
+            if len == 0 {
+                self.columna_inicio = 0;
+            }
+        }
+        if delta_columna != 0 {
+            let len = self.inicio_bloque_len(self.bloque_inicio);
+            if len > 0 {
+                self.columna_inicio = (self.columna_inicio as isize + delta_columna)
+                    .clamp(0, len as isize - 1) as usize;
+            }
+        }
+        self.actualizar_seleccion_inicio();
+    }
+
+    fn actualizar_seleccion_inicio(&mut self) {
+        self.seleccion = match self.bloque_inicio {
+            0 => self.columna_inicio,
+            1 => self.inicio.recientes.len() + self.columna_inicio,
+            _ => self.inicio.recientes.len() + self.inicio.anadidos.len() + self.columna_inicio,
+        };
+    }
+
+    fn sincronizar_inicio_desde_seleccion(&mut self) {
+        let n_recientes = self.inicio.recientes.len();
+        let n_anadidos = self.inicio.anadidos.len();
+        if self.seleccion < n_recientes {
+            self.bloque_inicio = 0;
+            self.columna_inicio = self.seleccion;
+        } else if self.seleccion < n_recientes + n_anadidos {
+            self.bloque_inicio = 1;
+            self.columna_inicio = self.seleccion - n_recientes;
+        } else {
+            self.bloque_inicio = 2;
+            self.columna_inicio = self.seleccion - n_recientes - n_anadidos;
+        }
+        let len = self.inicio_bloque_len(self.bloque_inicio);
+        if len == 0 {
+            self.columna_inicio = 0;
+        } else {
+            self.columna_inicio = self.columna_inicio.min(len - 1);
         }
     }
 
@@ -1651,6 +1725,15 @@ impl AppEstado {
                         format!("No se pudo cargar Inicio: {error:#}"),
                     ),
                 }
+                let total = self.inicio.recientes.len()
+                    + self.inicio.anadidos.len()
+                    + self.inicio.redescubre.len();
+                if total == 0 {
+                    self.seleccion = 0;
+                } else {
+                    self.seleccion = self.seleccion.min(total - 1);
+                }
+                self.sincronizar_inicio_desde_seleccion();
                 self.refrescar_playlists(ctx);
             }
             Vista::Artistas => match consultas::listar_artistas(ctx.conn) {

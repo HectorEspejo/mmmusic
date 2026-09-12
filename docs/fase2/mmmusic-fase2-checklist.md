@@ -69,9 +69,9 @@
 - [x] Indicador de scrobbling en la barra inferior: `↑` enviado, `…N` pendientes, `!` error, nada si está desactivado, con equivalentes `sc:ok` / `sc:N` / `sc:err` en modo ascii
 - [x] En modo compacto (< 70 columnas) el indicador solo muestra `!` si hay error
 - [x] `Ctrl+s` fuerza el envío inmediato de pendientes
-- [ ] Vista Inicio con tres bloques en rejilla de tarjetas 4×3 con carátula, `h`/`l` dentro del bloque y `j`/`k` entre bloques
+- [x] Vista Inicio con tres bloques en rejilla de tarjetas 4×3 con carátula, `h`/`l` dentro del bloque y `j`/`k` entre bloques
   - AC: Dado Inicio con carátulas activas, cuando se abre, entonces las tarjetas aparecen progresivamente y el bloque enfocado resalta su título
-- [ ] Inicio vuelve al formato de texto de F1 con `caratulas = false` o alto < 20 filas
+- [x] Inicio vuelve al formato de texto de F1 con `caratulas = false` o alto < 20 filas
 - [x] Overlay de ayuda con la sección "Scrobbling y favoritas" (`L`, `Ctrl+s`, subcomandos de CLI)
 - [x] Cabecera de álbum y vista Artistas muestran "Varios artistas" en los recopilatorios, manteniendo el artista real por pista en la lista
 
@@ -80,10 +80,10 @@
 - [x] Test de integración de recopilatorios con `tests/fixtures/recopilatorio/` (3 pistas, artistas distintos, sin albumartist) y de su reversión al etiquetar `albumartist`
 - [x] Test de persistencia de ENVIOS y de descarte de love/unlove anteriores
 - [x] `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios
-- [ ] README actualizado: scrobbling, autorización de Last.fm, copia de seguridad de `credenciales.toml`, reescaneo completo
+- [x] README actualizado: scrobbling, autorización de Last.fm, copia de seguridad de `credenciales.toml`, reescaneo completo
 
 ---
 
-**Progreso Fase 2:** 56 / 59 funcionalidades
+**Progreso Fase 2:** 59 / 59 funcionalidades
 
-**Total mmmusic (Fases 1-2):** 168 / 171 funcionalidades
+**Total mmmusic (Fases 1-2):** 171 / 171 funcionalidades

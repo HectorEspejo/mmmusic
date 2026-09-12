@@ -109,7 +109,7 @@ pub fn truncar(texto: &str, ancho: usize) -> String {
 fn ayuda_contextual(app: &AppEstado) -> String {
     match (app.vista, app.pantalla) {
         (Vista::Inicio, _) => {
-            " Enter reproducir/abrir · a cola · A a continuación · 1-6 secciones · ? ayuda"
+            " h/l tarjeta · j/k bloque · Enter reproducir/abrir · a cola · A a continuación · ? ayuda"
         }
         (Vista::Buscar, _) => {
             " Escribe para buscar · Enter resultados · Esc salir del campo · ? ayuda"
