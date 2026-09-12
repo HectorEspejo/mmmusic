@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use super::{FalloHttp, interpretar_lb};
+use super::{FalloHttp, interpretar};
 use crate::biblioteca::modelos::PistaResumen;
 
 pub const HOST: &str = "https://api.listenbrainz.org";
@@ -136,7 +136,7 @@ impl ClienteListenBrainz {
             .get(&url)
             .header("Authorization", &format!("Token {token}"))
             .call();
-        let cuerpo = interpretar_lb(respuesta)?;
+        let cuerpo = interpretar(respuesta)?;
         let valor: serde_json::Value = serde_json::from_str(&cuerpo)
             .map_err(|error| FalloHttp::red(format!("respuesta ilegible: {error}")))?;
         if valor.get("valid").and_then(serde_json::Value::as_bool) != Some(true) {
@@ -164,7 +164,7 @@ impl ClienteListenBrainz {
             .header("Authorization", &format!("Token {token}"))
             .header("Content-Type", "application/json")
             .send(cuerpo);
-        interpretar_lb(respuesta)
+        interpretar(respuesta)
     }
 }
 

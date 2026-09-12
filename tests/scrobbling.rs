@@ -175,6 +175,21 @@ fn descarta_al_agotar_los_reintentos() {
 }
 
 #[test]
+fn favoritas_alternan_de_forma_idempotente() {
+    let (_dir, conn) = bd_con_pista();
+    assert!(!consultas::favoritas::es_favorita(&conn, 1).expect("consultar"));
+    assert!(consultas::favoritas::alternar(&conn, 1).expect("marcar"));
+    assert!(consultas::favoritas::es_favorita(&conn, 1).expect("consultar"));
+    assert_eq!(consultas::favoritas::contar(&conn).expect("contar"), 1);
+    assert_eq!(consultas::favoritas::ids(&conn).expect("ids"), vec![1]);
+    let listado = consultas::favoritas::listar(&conn).expect("listar");
+    assert_eq!(listado.len(), 1);
+    assert_eq!(listado[0].titulo, "Pista");
+    assert!(!consultas::favoritas::alternar(&conn, 1).expect("quitar"));
+    assert_eq!(consultas::favoritas::contar(&conn).expect("contar"), 0);
+}
+
+#[test]
 fn regla_y_planificador_expuestos() {
     assert!(!regla::elegible(30_000));
     assert!(regla::elegible(30_001));

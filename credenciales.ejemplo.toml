@@ -1,0 +1,17 @@
+# Credenciales de los servicios de scrobbling de mmmusic.
+# Copia este fichero a ~/.config/mmmusic/credenciales.toml y rellena los
+# valores. Es el único fichero de mmmusic que no se puede regenerar: guárdalo
+# aparte de la base de datos y no lo compartas. mmmusic corrige sus permisos
+# a 600 automáticamente si son más abiertos.
+
+[listenbrainz]
+# Token de usuario (ListenBrainz → Settings → User token).
+token = ""
+
+[lastfm]
+# API key y secret propios, creados en https://www.last.fm/api/account/create
+api_key = ""
+api_secret = ""
+# Los rellena `mmmusic autorizar-lastfm`.
+session_key = ""
+usuario = ""

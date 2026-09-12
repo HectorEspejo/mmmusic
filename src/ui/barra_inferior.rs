@@ -29,6 +29,12 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
     let titulo = pista
         .map(|p| p.titulo.clone())
         .unwrap_or_else(|| "(detenido)".to_string());
+    let es_favorita = pista.is_some_and(|p| app.favoritas.contains(&p.id));
+    let titulo = if es_favorita {
+        format!("{} {titulo}", app.iconos.corazon)
+    } else {
+        titulo
+    };
     let subtitulo = pista
         .map(|p| format!("{} · {}", p.artista, p.album))
         .unwrap_or_default();

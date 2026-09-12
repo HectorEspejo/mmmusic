@@ -10,8 +10,9 @@ use crate::biblioteca::{bd, consultas};
 use crate::config::{Config, Rutas};
 use crate::credenciales;
 use crate::eventos::{AppEvento, EventoEscaneo};
-use crate::scrobbling::SERVICIO_LISTENBRAINZ;
+use crate::scrobbling::lastfm::{self, ClienteLastfm};
 use crate::scrobbling::listenbrainz::ClienteListenBrainz;
+use crate::scrobbling::{SERVICIO_LASTFM, SERVICIO_LISTENBRAINZ};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -35,6 +36,8 @@ pub enum Comando {
     },
     /// Comprobar las credenciales de los servicios de scrobbling
     ProbarServicios,
+    /// Autorizar Last.fm y guardar la sesión
+    AutorizarLastfm,
 }
 
 pub fn ejecutar_reescanear(completo: bool) -> Result<u8> {
@@ -129,7 +132,30 @@ pub fn ejecutar_probar_servicios() -> Result<u8> {
         println!("ListenBrainz: no configurado");
     }
 
-    println!("Last.fm: no configurado");
+    if cred.api_key_lastfm().is_some() && !cred.lastfm_autorizado() {
+        println!("Last.fm: error — sesión sin autorizar (ejecuta mmmusic autorizar-lastfm)");
+        error_configuracion = true;
+    } else if cred.lastfm_autorizado() {
+        configurados += 1;
+        let cliente = ClienteLastfm::nuevo(&cred);
+        match cliente.validar_sesion() {
+            Ok(usuario) => {
+                println!("Last.fm: OK ({usuario})");
+                consultas::envios::reprogramar_errores_auth(&conn, SERVICIO_LASTFM)?;
+                consultas::envios::limpiar_errores_auth(&conn, SERVICIO_LASTFM)?;
+            }
+            Err(fallo) => {
+                println!("Last.fm: error — {}", cred.redactar(&fallo.mensaje));
+                if fallo.status == 0 {
+                    error_red = true;
+                } else {
+                    error_configuracion = true;
+                }
+            }
+        }
+    } else {
+        println!("Last.fm: no configurado");
+    }
 
     if configurados == 0 {
         return Ok(1);
@@ -141,4 +167,68 @@ pub fn ejecutar_probar_servicios() -> Result<u8> {
         return Ok(1);
     }
     Ok(0)
+}
+
+pub fn ejecutar_autorizar_lastfm() -> Result<u8> {
+    let rutas = Rutas::detectar()?;
+    rutas.crear_directorios()?;
+    let mut carga = credenciales::cargar(&rutas.credenciales)?;
+    let Some(api_key) = carga.credenciales.api_key_lastfm().map(str::to_string) else {
+        eprintln!(
+            "Rellena api_key y api_secret en {}",
+            rutas.credenciales.display()
+        );
+        return Ok(1);
+    };
+    let Some(api_secret) = carga.credenciales.api_secret_lastfm().map(str::to_string) else {
+        eprintln!(
+            "Rellena api_key y api_secret en {}",
+            rutas.credenciales.display()
+        );
+        return Ok(1);
+    };
+    let agente = crate::scrobbling::agente_http();
+    let token = match lastfm::obtener_token(&agente, &api_key, &api_secret) {
+        Ok(token) => token,
+        Err(fallo) => {
+            eprintln!(
+                "No se pudo obtener el token de Last.fm: {}",
+                carga.credenciales.redactar(&fallo.mensaje)
+            );
+            return Ok(if fallo.status == 0 { 2 } else { 1 });
+        }
+    };
+    let url = format!("https://www.last.fm/api/auth/?api_key={api_key}&token={token}");
+    println!("Abre esta URL y autoriza mmmusic en Last.fm:\n  {url}");
+    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+    for intento in 1..=3 {
+        println!("Pulsa Enter cuando hayas autorizado…");
+        let mut linea = String::new();
+        io::stdin().read_line(&mut linea)?;
+        match lastfm::obtener_sesion(&agente, &api_key, &api_secret, &token) {
+            Ok(sesion) => {
+                carga.credenciales.lastfm.session_key = Some(sesion.session_key);
+                carga.credenciales.lastfm.usuario = Some(sesion.usuario.clone());
+                credenciales::guardar(&rutas.credenciales, &carga.credenciales)?;
+                println!(
+                    "Last.fm autorizado como {}. Sesión guardada en {}",
+                    sesion.usuario,
+                    rutas.credenciales.display()
+                );
+                return Ok(0);
+            }
+            Err(fallo) if fallo.codigo_servicio == Some(14) => {
+                println!("Aún no autorizado (intento {intento}/3); vuelve a pulsar Enter.");
+            }
+            Err(fallo) => {
+                eprintln!(
+                    "No se pudo obtener la sesión: {}",
+                    carga.credenciales.redactar(&fallo.mensaje)
+                );
+                return Ok(if fallo.status == 0 { 2 } else { 1 });
+            }
+        }
+    }
+    eprintln!("No se pudo autorizar Last.fm tras 3 intentos");
+    Ok(1)
 }

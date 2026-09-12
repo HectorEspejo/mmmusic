@@ -24,14 +24,14 @@
 - [x] Carga de `~/.config/mmmusic/credenciales.toml` con secciones `[listenbrainz]` (token) y `[lastfm]` (api_key, api_secret, session_key, usuario)
 - [x] Permisos de `credenciales.toml` distintos de 600 se corrigen automáticamente con toast de aviso
 - [x] Servicio activo en config sin credenciales se trata como inactivo con toast al arrancar
-- [ ] Subcomando `mmmusic autorizar-lastfm`: `auth.getToken`, URL de autorización (intento de `xdg-open`), espera de Enter, `auth.getSession` con hasta 3 reintentos y guardado de `session_key` y `usuario`
+- [x] Subcomando `mmmusic autorizar-lastfm`: `auth.getToken`, URL de autorización (intento de `xdg-open`), espera de Enter, `auth.getSession` con hasta 3 reintentos y guardado de `session_key` y `usuario`
   - AC: Dado api_key y api_secret válidos, cuando el usuario autoriza en el navegador y pulsa Enter, entonces el fichero contiene `session_key` y el comando termina con código 0
-- [ ] Subcomando `mmmusic probar-servicios`: `validate-token` en ListenBrainz y `user.getInfo` en Last.fm, una línea por servicio y reprogramación de los envíos en error de autenticación si la prueba pasa
+- [x] Subcomando `mmmusic probar-servicios`: `validate-token` en ListenBrainz y `user.getInfo` en Last.fm, una línea por servicio y reprogramación de los envíos en error de autenticación si la prueba pasa
 - [x] Códigos de salida de CLI: 0 OK, 1 error de configuración, 2 error de red
-- [ ] `credenciales.ejemplo.toml` documentado y sección `[scrobbling]` en `config.ejemplo.toml`
+- [x] `credenciales.ejemplo.toml` documentado y sección `[scrobbling]` en `config.ejemplo.toml`
 
 ## Hilo de scrobbling y cola de envíos
-- [ ] Hilo de scrobbling con conexión SQLite propia, canal `ComandoScrobbling` (NowPlaying, Completada, Amar, Desamar, EnviarAhora, RecargarCredenciales, Apagar) y `watch<EstadoScrobbling>`
+- [x] Hilo de scrobbling con conexión SQLite propia, canal `ComandoScrobbling` (NowPlaying, Completada, Amar, Desamar, EnviarAhora, RecargarCredenciales, Apagar) y `watch<EstadoScrobbling>`
 - [x] Regla de elegibilidad: pista > 30 s; umbral min(50 %, 4 min) de tiempo real acumulado
 - [x] `HISTORIAL_REPRODUCCION.completada` pasa a usar el umbral min(50 %, 4 min) en lugar del 50 % fijo
 - [x] Now playing enviado a cada servicio activo al cargar una pista elegible, sin cola ni reintentos
@@ -39,8 +39,8 @@
 - [x] Ciclo de envío cada 30 s con lotes de hasta 50 pendientes por servicio ordenados por `reproducido_en`, y reposo del hilo sin pendientes
 - [x] Planificador de reintentos exponencial 30 s · 2^intentos con tope 6 h y descarte tras 20 intentos
 - [x] Errores de autenticación (401/403, Last.fm 4/9/14) reprograman a +24 h, guardan `scrobbling_ultimo_error` y muestran toast con el servicio afectado
-- [ ] Descarte de scrobbles Last.fm con `reproducido_en` de más de 14 días o timestamp futuro, y de envíos con firma inválida (Last.fm 13)
-- [ ] Respuesta parcial de Last.fm (`ignored`) marca solo ese envío como descartado con el motivo
+- [x] Descarte de scrobbles Last.fm con `reproducido_en` de más de 14 días o timestamp futuro, y de envíos con firma inválida (Last.fm 13)
+- [x] Respuesta parcial de Last.fm (`ignored`) marca solo ese envío como descartado con el motivo
 - [x] Lote ListenBrainz rechazado (400) se reintenta elemento a elemento para aislar y descartar el defectuoso
 - [x] Toda petición HTTP con `ureq` (rustls), timeout 10 s, `User-Agent: mmmusic/<versión>`, solo a `api.listenbrainz.org` y `ws.audioscrobbler.com`
 - [x] Tokens, `api_secret` y `session_key` nunca aparecen en logs, toasts ni `error_msg`
@@ -53,17 +53,17 @@
 - [x] `GET /1/validate-token` para `probar-servicios`
 
 ## Last.fm
-- [ ] Firma `api_sig` = md5 de parámetros ordenados + secret, `format=json`, con test unitario contra un vector conocido
-- [ ] `track.updateNowPlaying`, `track.scrobble` por lotes con parámetros indexados `[i]`, `track.love`, `track.unlove` y `user.getInfo`
-- [ ] Envío de título, artista y álbum originales (no normalizados) y `duration` en segundos
+- [x] Firma `api_sig` = md5 de parámetros ordenados + secret, `format=json`, con test unitario contra un vector conocido
+- [x] `track.updateNowPlaying`, `track.scrobble` por lotes con parámetros indexados `[i]`, `track.love`, `track.unlove` y `user.getInfo`
+- [x] Envío de título, artista y álbum originales (no normalizados) y `duration` en segundos
 
 ## Favoritas
-- [ ] `L` alterna la favorita de la pista seleccionada o, sin selección de pista, de la que suena; se ignora sobre artistas, álbumes y playlists
-- [ ] Encolado de `love`/`unlove` para Last.fm al alternar, descartando el pendiente anterior de la misma pista
-- [ ] Pseudo-playlist "♥ Favoritas" primera en la sección Playlists, no editable con `R`, `D`, `J`/`K` ni `d`
-- [ ] Detalle de ♥ Favoritas con reproducción en contexto, `a`, `A`, `P` y exportación M3U8 como `Favoritas.m3u8`
-- [ ] Barra inferior muestra ♥ junto al título cuando la pista actual es favorita
-- [ ] Toast "♥ <título>" / "Quitada de favoritas" al alternar
+- [x] `L` alterna la favorita de la pista seleccionada o, sin selección de pista, de la que suena; se ignora sobre artistas, álbumes y playlists
+- [x] Encolado de `love`/`unlove` para Last.fm al alternar, descartando el pendiente anterior de la misma pista
+- [x] Pseudo-playlist "♥ Favoritas" primera en la sección Playlists, no editable con `R`, `D`, `J`/`K` ni `d`
+- [x] Detalle de ♥ Favoritas con reproducción en contexto, `a`, `A`, `P` y exportación M3U8 como `Favoritas.m3u8`
+- [x] Barra inferior muestra ♥ junto al título cuando la pista actual es favorita
+- [x] Toast "♥ <título>" / "Quitada de favoritas" al alternar
 
 ## Interfaz
 - [x] Indicador de scrobbling en la barra inferior: `↑` enviado, `…N` pendientes, `!` error, nada si está desactivado, con equivalentes `sc:ok` / `sc:N` / `sc:err` en modo ascii
@@ -72,11 +72,11 @@
 - [ ] Vista Inicio con tres bloques en rejilla de tarjetas 4×3 con carátula, `h`/`l` dentro del bloque y `j`/`k` entre bloques
   - AC: Dado Inicio con carátulas activas, cuando se abre, entonces las tarjetas aparecen progresivamente y el bloque enfocado resalta su título
 - [ ] Inicio vuelve al formato de texto de F1 con `caratulas = false` o alto < 20 filas
-- [ ] Overlay de ayuda con la sección "Scrobbling y favoritas" (`L`, `Ctrl+s`, subcomandos de CLI)
+- [x] Overlay de ayuda con la sección "Scrobbling y favoritas" (`L`, `Ctrl+s`, subcomandos de CLI)
 - [x] Cabecera de álbum y vista Artistas muestran "Varios artistas" en los recopilatorios, manteniendo el artista real por pista en la lista
 
 ## Calidad y entrega
-- [ ] Tests unitarios de regla de scrobble, planificador de reintentos, clasificación de respuestas, firma Last.fm y cuerpo JSON de ListenBrainz
+- [x] Tests unitarios de regla de scrobble, planificador de reintentos, clasificación de respuestas, firma Last.fm y cuerpo JSON de ListenBrainz
 - [x] Test de integración de recopilatorios con `tests/fixtures/recopilatorio/` (3 pistas, artistas distintos, sin albumartist) y de su reversión al etiquetar `albumartist`
 - [x] Test de persistencia de ENVIOS y de descarte de love/unlove anteriores
 - [x] `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios
@@ -84,6 +84,6 @@
 
 ---
 
-**Progreso Fase 2:** 39 / 59 funcionalidades
+**Progreso Fase 2:** 56 / 59 funcionalidades
 
-**Total mmmusic (Fases 1-2):** 151 / 171 funcionalidades
+**Total mmmusic (Fases 1-2):** 168 / 171 funcionalidades

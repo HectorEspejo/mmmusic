@@ -1,4 +1,5 @@
 pub mod estado;
+pub mod lastfm;
 pub mod listenbrainz;
 pub mod planificador;
 pub mod regla;
@@ -14,6 +15,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use self::estado::{EstadoScrobbling, EstadoServicio};
+use self::lastfm::{Cancion, ClienteLastfm};
 use self::listenbrainz::{ClienteListenBrainz, escucha};
 use self::planificador::Clasificacion;
 use crate::biblioteca::modelos::PistaResumen;
@@ -32,6 +34,7 @@ pub const LOTE_MAXIMO: usize = 50;
 pub const MARCA_AUTH: &str = "auth:";
 pub const ERROR_AUTH_LISTENBRAINZ: &str =
     "ListenBrainz: token no válido — revisa credenciales.toml";
+pub const ERROR_AUTH_LASTFM: &str = "Last.fm: sesión no válida — ejecuta mmmusic autorizar-lastfm";
 
 const CICLO: Duration = Duration::from_secs(30);
 
@@ -60,6 +63,8 @@ pub enum ComandoScrobbling {
         pista: PistaResumen,
         reproducido_en: String,
     },
+    Amar(i64),
+    Desamar(i64),
     EnviarAhora,
     RecargarCredenciales,
     Apagar,
@@ -192,6 +197,7 @@ struct Scrobbler {
     config: ConfigScrobbling,
     credenciales: Credenciales,
     lb: ClienteListenBrainz,
+    lf: ClienteLastfm,
     tx_app: Sender<AppEvento>,
     tx_estado: watch::Sender<EstadoScrobbling>,
     rx_cmd: Receiver<ComandoScrobbling>,
@@ -219,12 +225,14 @@ impl Scrobbler {
             estado.ultimo_error = Some(texto);
         }
         let lb = ClienteListenBrainz::nuevo(credenciales.token_listenbrainz().map(str::to_string));
+        let lf = ClienteLastfm::nuevo(&credenciales);
         let mut scrobbler = Self {
             conn,
             ruta_credenciales,
             config,
             credenciales,
             lb,
+            lf,
             tx_app,
             tx_estado,
             rx_cmd,
@@ -246,6 +254,8 @@ impl Scrobbler {
                 pista,
                 reproducido_en,
             } => self.completada(&pista, historial_id, &reproducido_en)?,
+            ComandoScrobbling::Amar(pista_id) => self.encolar_favorita(pista_id, true)?,
+            ComandoScrobbling::Desamar(pista_id) => self.encolar_favorita(pista_id, false)?,
         }
         Ok(false)
     }
@@ -263,6 +273,11 @@ impl Scrobbler {
         if self.credenciales.token_listenbrainz().is_some() {
             consultas::envios::reprogramar_errores_auth(&self.conn, SERVICIO_LISTENBRAINZ)?;
             self.estado.listenbrainz.error = None;
+        }
+        if self.credenciales.lastfm_autorizado() {
+            consultas::envios::reprogramar_errores_auth(&self.conn, SERVICIO_LASTFM)?;
+            self.estado.lastfm.error = None;
+            consultas::envios::limpiar_errores_auth(&self.conn, SERVICIO_LASTFM)?;
         }
         if self.estado.listenbrainz.error.is_none() && self.estado.lastfm.error.is_none() {
             self.estado.ultimo_error = None;
@@ -283,6 +298,13 @@ impl Scrobbler {
                 servicio = SERVICIO_LISTENBRAINZ,
                 "now playing falló: {mensaje}"
             );
+        }
+        if self.estado.lastfm.activo {
+            let cancion = cancion_de(pista, None);
+            if let Err(fallo) = self.lf.enviar_ahora(&cancion) {
+                let mensaje = self.credenciales.redactar(&fallo.mensaje);
+                warn!(servicio = SERVICIO_LASTFM, "now playing falló: {mensaje}");
+            }
         }
     }
 
@@ -305,6 +327,32 @@ impl Scrobbler {
                 Some(reproducido_en),
             )?;
         }
+        if self.estado.lastfm.activo {
+            consultas::envios::encolar(
+                &self.conn,
+                SERVICIO_LASTFM,
+                "scrobble",
+                pista.id,
+                Some(historial_id),
+                Some(reproducido_en),
+            )?;
+        }
+        self.actualizar_pendientes()?;
+        Ok(())
+    }
+
+    fn encolar_favorita(&mut self, pista_id: i64, amar: bool) -> Result<()> {
+        if !self.estado.lastfm.activo {
+            return Ok(());
+        }
+        consultas::envios::encolar(
+            &self.conn,
+            SERVICIO_LASTFM,
+            if amar { "love" } else { "unlove" },
+            pista_id,
+            None,
+            None,
+        )?;
         self.actualizar_pendientes()?;
         Ok(())
     }
@@ -313,7 +361,131 @@ impl Scrobbler {
         if self.estado.listenbrainz.activo {
             self.ciclo_listenbrainz()?;
         }
+        if self.estado.lastfm.activo {
+            self.ciclo_lastfm()?;
+        }
         self.actualizar_pendientes()?;
+        Ok(())
+    }
+
+    fn ciclo_lastfm(&mut self) -> Result<()> {
+        let pendientes = consultas::envios::pendientes(&self.conn, SERVICIO_LASTFM, LOTE_MAXIMO)?;
+        if pendientes.is_empty() {
+            return Ok(());
+        }
+        let (favoritas, scrobbles): (Vec<_>, Vec<_>) = pendientes
+            .iter()
+            .partition(|envio| envio.tipo != "scrobble");
+        for envio in favoritas {
+            let cancion = cancion_de_envio(envio, None);
+            let resultado = if envio.tipo == "love" {
+                self.lf.amar(&cancion)
+            } else {
+                self.lf.desamar(&cancion)
+            };
+            match resultado {
+                Ok(()) => {
+                    consultas::envios::marcar_enviado(&self.conn, envio.id)?;
+                    self.estado.lastfm.ultimo_envio = Some(Instant::now());
+                    self.estado.lastfm.error = None;
+                    self.limpiar_ultimo_error()?;
+                }
+                Err(fallo) => {
+                    let clasificacion =
+                        planificador::clasificar(fallo.status, fallo.codigo_servicio);
+                    match clasificacion {
+                        Clasificacion::Autenticacion => {
+                            self.marcar_auth(
+                                SERVICIO_LASTFM,
+                                ERROR_AUTH_LASTFM,
+                                std::slice::from_ref(envio),
+                            )?;
+                            return Ok(());
+                        }
+                        Clasificacion::Descartar => {
+                            consultas::envios::descartar(
+                                &self.conn,
+                                envio.id,
+                                &self.credenciales.redactar(&fallo.mensaje),
+                            )?;
+                        }
+                        _ => self.reintentar_envio(envio, &fallo.mensaje)?,
+                    }
+                }
+            }
+        }
+
+        let ahora = bd::ahora_unix();
+        let mut canciones = Vec::with_capacity(scrobbles.len());
+        let mut validos = Vec::with_capacity(scrobbles.len());
+        for envio in &scrobbles {
+            let Some(unix) = envio.reproducido_en.as_deref().and_then(bd::unix_desde_iso) else {
+                consultas::envios::descartar(&self.conn, envio.id, "marca de tiempo inválida")?;
+                continue;
+            };
+            if planificador::es_demasiado_antiguo(unix, ahora) {
+                consultas::envios::descartar(
+                    &self.conn,
+                    envio.id,
+                    "más de 14 días: Last.fm lo rechazaría",
+                )?;
+                continue;
+            }
+            if planificador::es_futuro(unix, ahora) {
+                consultas::envios::descartar(&self.conn, envio.id, "timestamp futuro")?;
+                continue;
+            }
+            canciones.push(cancion_de_envio(envio, Some(unix)));
+            validos.push((*envio).clone());
+        }
+        if canciones.is_empty() {
+            return Ok(());
+        }
+        match self.lf.enviar_scrobbles(&canciones) {
+            Ok(resultado) => {
+                let ignorados: std::collections::HashMap<usize, &String> = resultado
+                    .ignorados
+                    .iter()
+                    .map(|(indice, motivo)| (*indice, motivo))
+                    .collect();
+                for (indice, envio) in validos.iter().enumerate() {
+                    if let Some(motivo) = ignorados.get(&indice) {
+                        consultas::envios::descartar(
+                            &self.conn,
+                            envio.id,
+                            &self.credenciales.redactar(motivo),
+                        )?;
+                    } else {
+                        consultas::envios::marcar_enviado(&self.conn, envio.id)?;
+                    }
+                }
+                self.estado.lastfm.ultimo_envio = Some(Instant::now());
+                self.estado.lastfm.error = None;
+                self.limpiar_ultimo_error()?;
+            }
+            Err(fallo) => {
+                let clasificacion = planificador::clasificar(fallo.status, fallo.codigo_servicio);
+                match clasificacion {
+                    Clasificacion::Autenticacion => {
+                        self.marcar_auth(SERVICIO_LASTFM, ERROR_AUTH_LASTFM, &validos)?;
+                    }
+                    Clasificacion::Descartar => {
+                        for envio in &validos {
+                            consultas::envios::descartar(
+                                &self.conn,
+                                envio.id,
+                                &self.credenciales.redactar(&fallo.mensaje),
+                            )?;
+                        }
+                    }
+                    _ => {
+                        for envio in &validos {
+                            self.reintentar_envio(envio, &fallo.mensaje)?;
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -507,13 +679,20 @@ impl Scrobbler {
                 "ListenBrainz activo sin token en credenciales.toml",
             );
         }
-        let lastfm = self.estado.lastfm.clone();
+        let lastfm_autorizado = self.credenciales.lastfm_autorizado();
+        self.lf = ClienteLastfm::nuevo(&self.credenciales);
         self.estado.lastfm = EstadoServicio {
-            activo: false,
-            ..lastfm
+            activo: self.config.lastfm && lastfm_autorizado,
+            pendientes: consultas::envios::contar_pendientes(&self.conn, SERVICIO_LASTFM)?,
+            ultimo_envio: self.estado.lastfm.ultimo_envio,
+            error: self.estado.lastfm.error.clone(),
         };
-        self.estado.lastfm.pendientes =
-            consultas::envios::contar_pendientes(&self.conn, SERVICIO_LASTFM)?;
+        if avisar && self.config.lastfm && !lastfm_autorizado {
+            self.notificar(
+                NivelAviso::Aviso,
+                "Last.fm activo sin autorizar — ejecuta mmmusic autorizar-lastfm",
+            );
+        }
         Ok(())
     }
 
@@ -548,7 +727,27 @@ pub fn url_permitida(url: &str) -> bool {
         .any(|host| url.starts_with(&format!("{host}/")))
 }
 
-pub(crate) fn interpretar_lb(
+fn cancion_de(pista: &PistaResumen, unix: Option<i64>) -> Cancion<'_> {
+    Cancion {
+        artista: &pista.artista,
+        titulo: &pista.titulo,
+        album: &pista.album,
+        duracion_ms: pista.duracion_ms,
+        unix,
+    }
+}
+
+fn cancion_de_envio(envio: &consultas::envios::EnvioPendiente, unix: Option<i64>) -> Cancion<'_> {
+    Cancion {
+        artista: &envio.artista,
+        titulo: &envio.titulo,
+        album: &envio.album,
+        duracion_ms: envio.duracion_ms,
+        unix,
+    }
+}
+
+pub(crate) fn interpretar(
     respuesta: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<String, FalloHttp> {
     match respuesta {

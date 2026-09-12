@@ -51,6 +51,10 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect, compacto: bool) {
             " Playlists",
             Style::new().fg(app.paleta.secundario),
         )));
+        lineas.push(Line::from(Span::styled(
+            format!("  {}", crate::app::NOMBRE_FAVORITAS),
+            Style::new().fg(app.paleta.texto),
+        )));
         for playlist in &app.playlists {
             lineas.push(Line::from(Span::styled(
                 format!("  {}", playlist.nombre),

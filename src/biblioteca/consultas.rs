@@ -884,8 +884,15 @@ pub mod playlist {
         carpeta: &Path,
         nombre_fichero: &str,
     ) -> Result<PathBuf> {
-        let nombre = playlist_de(conn, playlist_id)?;
         let pistas = pistas(conn, playlist_id)?;
+        exportar_m3u_pistas(carpeta, nombre_fichero, &pistas)
+    }
+
+    pub fn exportar_m3u_pistas(
+        carpeta: &Path,
+        nombre_fichero: &str,
+        pistas: &[PistaListado],
+    ) -> Result<PathBuf> {
         std::fs::create_dir_all(carpeta)
             .with_context(|| format!("no se pudo crear {}", carpeta.display()))?;
         let mut fichero = nombre_fichero.trim().to_string();
@@ -905,7 +912,6 @@ pub mod playlist {
         }
         std::fs::write(&ruta, contenido)
             .with_context(|| format!("no se pudo escribir {}", ruta.display()))?;
-        let _ = nombre;
         Ok(ruta)
     }
 
@@ -960,15 +966,6 @@ pub mod playlist {
             rutas.push(normalizar_lexica(&absoluta));
         }
         rutas
-    }
-
-    fn playlist_de(conn: &Connection, playlist_id: i64) -> Result<String> {
-        conn.query_row(
-            "SELECT nombre FROM PLAYLISTS WHERE id = ?1",
-            [playlist_id],
-            |fila| fila.get(0),
-        )
-        .context("no se pudo leer la playlist")
     }
 
     fn nombre_libre(conn: &Connection, base: &str) -> Result<String> {
@@ -1217,6 +1214,72 @@ pub mod historial {
         )
         .context("no se pudo marcar el historial como completado")?;
         Ok(())
+    }
+}
+
+pub mod favoritas {
+    use super::*;
+
+    pub fn es_favorita(conn: &Connection, pista_id: i64) -> Result<bool> {
+        let existe: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM FAVORITAS WHERE pista_id = ?1",
+                [pista_id],
+                |fila| fila.get(0),
+            )
+            .context("no se pudo comprobar la favorita")?;
+        Ok(existe > 0)
+    }
+
+    pub fn alternar(conn: &Connection, pista_id: i64) -> Result<bool> {
+        if es_favorita(conn, pista_id)? {
+            conn.execute("DELETE FROM FAVORITAS WHERE pista_id = ?1", [pista_id])
+                .context("no se pudo quitar la favorita")?;
+            Ok(false)
+        } else {
+            conn.execute(
+                "INSERT INTO FAVORITAS (pista_id, marcada_en) VALUES (?1, ?2)
+                 ON CONFLICT(pista_id) DO NOTHING",
+                params![pista_id, bd::ahora_iso()],
+            )
+            .context("no se pudo marcar la favorita")?;
+            Ok(true)
+        }
+    }
+
+    pub fn ids(conn: &Connection) -> Result<Vec<i64>> {
+        let mut sentencia = conn
+            .prepare("SELECT pista_id FROM FAVORITAS")
+            .context("no se pudieron preparar las favoritas")?;
+        sentencia
+            .query_map([], |fila| fila.get(0))
+            .context("no se pudieron listar las favoritas")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer las favoritas")
+    }
+
+    pub fn listar(conn: &Connection) -> Result<Vec<PistaListado>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT p.id, p.titulo, ar.nombre, al.titulo, al.id, p.duracion_ms, al.anio,
+                        p.formato, al.caratula_ruta, p.ruta
+                   FROM FAVORITAS f
+                   JOIN PISTAS p ON p.id = f.pista_id
+                   JOIN ARTISTAS ar ON ar.id = p.artista_id
+                   JOIN ALBUMES al ON al.id = p.album_id
+                  ORDER BY f.marcada_en DESC, p.titulo_norm",
+            )
+            .context("no se pudieron preparar las pistas favoritas")?;
+        sentencia
+            .query_map([], pista_listado_desde_fila)
+            .context("no se pudieron listar las pistas favoritas")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer las pistas favoritas")
+    }
+
+    pub fn contar(conn: &Connection) -> Result<i64> {
+        conn.query_row("SELECT count(*) FROM FAVORITAS", [], |fila| fila.get(0))
+            .context("no se pudieron contar las favoritas")
     }
 }
 

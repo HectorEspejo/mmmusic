@@ -34,6 +34,7 @@ fn main() -> ExitCode {
     let resultado: Result<u8> = match cli.comando {
         Some(Comando::Reescanear { completo }) => cli::ejecutar_reescanear(completo),
         Some(Comando::ProbarServicios) => cli::ejecutar_probar_servicios(),
+        Some(Comando::AutorizarLastfm) => cli::ejecutar_autorizar_lastfm(),
         None => ejecutar_tui().map(|()| 0),
     };
     match resultado {
@@ -128,6 +129,7 @@ fn ejecutar_tui() -> Result<()> {
             scrobbling: &manejo_scrobbling,
         };
         app.refrescar_contadores(&ctx);
+        app.refrescar_favoritas(&ctx);
         app.refrescar_vista(Vista::Inicio, &ctx);
         if reescaneo_pendiente {
             app.notificar(

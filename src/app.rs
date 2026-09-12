@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -27,6 +28,8 @@ use crate::ui::teclas::{Accion, traducir};
 
 const DURACION_TOAST: Duration = Duration::from_secs(3);
 const PAGINA_SALTOS: usize = 10;
+pub const PLAYLIST_FAVORITAS: i64 = -1;
+pub const NOMBRE_FAVORITAS: &str = "♥ Favoritas";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vista {
@@ -110,6 +113,10 @@ pub enum AccionDialogo {
     RenombrarPlaylist(i64),
     EliminarPlaylist(i64),
     ExportarPlaylist(i64),
+    ExportarFavoritas,
+    ExportarFavoritasConfirmado {
+        nombre_fichero: String,
+    },
     ImportarPlaylist,
     AnadirAPlaylist {
         pistas: Vec<i64>,
@@ -207,6 +214,7 @@ pub struct AppEstado {
     pub pila: Vec<(Vista, Pantalla)>,
     pub estado_reproductor: EstadoReproduccion,
     pub estado_scrobbling: EstadoScrobbling,
+    pub favoritas: HashSet<i64>,
     pub total_pistas: i64,
     pub playlists: Vec<PlaylistResumen>,
     pub pistas: Vec<PistaListado>,
@@ -261,6 +269,7 @@ impl AppEstado {
             pila: Vec::new(),
             estado_reproductor,
             estado_scrobbling: EstadoScrobbling::default(),
+            favoritas: HashSet::new(),
             total_pistas,
             playlists: Vec::new(),
             pistas: Vec::new(),
@@ -500,6 +509,7 @@ impl AppEstado {
                 } else if self.vista == Vista::Playlists
                     && self.pantalla == Pantalla::DetallePlaylist
                     && self.foco == Foco::Contenido
+                    && !self.es_playlist_favoritas()
                 {
                     self.quitar_pista_playlist(ctx);
                 }
@@ -549,6 +559,12 @@ impl AppEstado {
                         valor: format!("{}.m3u8", playlist.nombre),
                         accion: AccionDialogo::ExportarPlaylist(playlist.id),
                     });
+                } else if self.es_playlist_favoritas() {
+                    self.dialogo = Some(Dialogo::Texto {
+                        titulo: "Exportar a M3U8 (nombre de fichero)".to_string(),
+                        valor: "Favoritas.m3u8".to_string(),
+                        accion: AccionDialogo::ExportarFavoritas,
+                    });
                 }
             }
             Accion::ImportarPlaylist => {
@@ -562,6 +578,7 @@ impl AppEstado {
             Accion::AlternarPausa => {
                 ctx.reproductor.enviar(ComandoReproductor::AlternarPausa);
             }
+            Accion::AlternarFavorita => self.alternar_favorita(ctx),
             Accion::Siguiente => {
                 ctx.reproductor.enviar(ComandoReproductor::Siguiente);
             }
@@ -733,7 +750,7 @@ impl AppEstado {
                 .as_ref()
                 .map(|(_, pistas)| pistas.len())
                 .unwrap_or(0),
-            (Vista::Playlists, _) => self.playlists.len(),
+            (Vista::Playlists, _) => self.playlists.len() + 1,
             (Vista::Buscar, _) => {
                 self.resultados.artistas.len()
                     + self.resultados.albumes.len()
@@ -773,7 +790,11 @@ impl AppEstado {
 
     fn abrir_seleccion(&mut self, ctx: &ContextoApp<'_>) {
         if self.vista == Vista::Playlists && self.pantalla == Pantalla::Lista {
-            let Some(playlist) = self.playlists.get(self.seleccion) else {
+            if self.seleccion == 0 {
+                self.abrir_favoritas(ctx);
+                return;
+            }
+            let Some(playlist) = self.playlists.get(self.seleccion - 1) else {
                 return;
             };
             let playlist = playlist.clone();
@@ -1032,6 +1053,7 @@ impl AppEstado {
         if self.vista == Vista::Playlists
             && self.pantalla == Pantalla::DetallePlaylist
             && self.foco == Foco::Contenido
+            && !self.es_playlist_favoritas()
         {
             let Some((playlist, pistas)) = self.detalle_playlist.as_ref() else {
                 return;
@@ -1065,8 +1087,48 @@ impl AppEstado {
 
     fn playlist_seleccionada(&self) -> Option<PlaylistResumen> {
         match self.pantalla {
-            Pantalla::DetallePlaylist => self.detalle_playlist.as_ref().map(|(p, _)| p.clone()),
-            _ => self.playlists.get(self.seleccion).cloned(),
+            Pantalla::DetallePlaylist => self
+                .detalle_playlist
+                .as_ref()
+                .filter(|(playlist, _)| playlist.id != PLAYLIST_FAVORITAS)
+                .map(|(playlist, _)| playlist.clone()),
+            _ => self
+                .seleccion
+                .checked_sub(1)
+                .and_then(|indice| self.playlists.get(indice))
+                .cloned(),
+        }
+    }
+
+    fn es_playlist_favoritas(&self) -> bool {
+        if self.pantalla == Pantalla::DetallePlaylist {
+            return self
+                .detalle_playlist
+                .as_ref()
+                .is_some_and(|(playlist, _)| playlist.id == PLAYLIST_FAVORITAS);
+        }
+        self.vista == Vista::Playlists && self.pantalla == Pantalla::Lista && self.seleccion == 0
+    }
+
+    fn abrir_favoritas(&mut self, ctx: &ContextoApp<'_>) {
+        match consultas::favoritas::listar(ctx.conn) {
+            Ok(pistas) => {
+                self.pila.push((self.vista, self.pantalla));
+                self.detalle_playlist = Some((
+                    PlaylistResumen {
+                        id: PLAYLIST_FAVORITAS,
+                        nombre: NOMBRE_FAVORITAS.to_string(),
+                        num_pistas: pistas.len() as i64,
+                    },
+                    pistas,
+                ));
+                self.pantalla = Pantalla::DetallePlaylist;
+                self.seleccion = 0;
+            }
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron abrir las favoritas: {error:#}"),
+            ),
         }
     }
 
@@ -1096,7 +1158,12 @@ impl AppEstado {
             .as_ref()
             .map(|(playlist, _)| playlist.nombre.clone())
             .unwrap_or_default();
-        match consultas::playlist::pistas(ctx.conn, playlist_id) {
+        let resultado = if playlist_id == PLAYLIST_FAVORITAS {
+            consultas::favoritas::listar(ctx.conn)
+        } else {
+            consultas::playlist::pistas(ctx.conn, playlist_id)
+        };
+        match resultado {
             Ok(pistas) => {
                 let num_pistas = pistas.len() as i64;
                 self.detalle_playlist = Some((
@@ -1110,7 +1177,9 @@ impl AppEstado {
                 if self.seleccion >= num_pistas as usize {
                     self.seleccion = (num_pistas as usize).saturating_sub(1);
                 }
-                self.refrescar_playlists(ctx);
+                if playlist_id != PLAYLIST_FAVORITAS {
+                    self.refrescar_playlists(ctx);
+                }
             }
             Err(error) => self.notificar(
                 NivelAviso::Error,
@@ -1371,6 +1440,24 @@ impl AppEstado {
             } => {
                 self.exportar_playlist(ctx, playlist_id, &nombre_fichero);
             }
+            AccionDialogo::ExportarFavoritas => {
+                let carpeta = self.config.carpeta_playlists();
+                let ruta = carpeta.join(valor.trim());
+                if ruta.exists() {
+                    self.dialogo = Some(Dialogo::Confirmacion {
+                        titulo: "Sobrescribir fichero".to_string(),
+                        mensaje: format!("{} ya existe. ¿Sobrescribirlo?", ruta.display()),
+                        accion: AccionDialogo::ExportarFavoritasConfirmado {
+                            nombre_fichero: valor,
+                        },
+                    });
+                } else {
+                    self.exportar_favoritas(ctx, &valor);
+                }
+            }
+            AccionDialogo::ExportarFavoritasConfirmado { nombre_fichero } => {
+                self.exportar_favoritas(ctx, &nombre_fichero);
+            }
             AccionDialogo::ImportarPlaylist => {
                 let bruto = valor.trim();
                 if bruto.is_empty() {
@@ -1440,6 +1527,82 @@ impl AppEstado {
             Err(error) => {
                 self.notificar(NivelAviso::Error, format!("No se pudo exportar: {error:#}"))
             }
+        }
+    }
+
+    fn exportar_favoritas(&mut self, ctx: &ContextoApp<'_>, nombre_fichero: &str) {
+        let carpeta = self.config.carpeta_playlists();
+        let resultado = consultas::favoritas::listar(ctx.conn).and_then(|pistas| {
+            consultas::playlist::exportar_m3u_pistas(&carpeta, nombre_fichero, &pistas)
+        });
+        match resultado {
+            Ok(ruta) => self.notificar(NivelAviso::Info, format!("Exportada a {}", ruta.display())),
+            Err(error) => {
+                self.notificar(NivelAviso::Error, format!("No se pudo exportar: {error:#}"))
+            }
+        }
+    }
+
+    fn pista_actual_id(&self) -> Option<i64> {
+        self.estado_reproductor
+            .pista_actual
+            .as_ref()
+            .map(|pista| pista.id)
+    }
+
+    fn pista_bajo_cursor(&self) -> Option<i64> {
+        if self.foco == Foco::Cola {
+            return self
+                .estado_reproductor
+                .cola
+                .get(self.seleccion_cola)
+                .map(|pista| pista.id)
+                .or_else(|| self.pista_actual_id());
+        }
+        let seleccionada = match self.contexto() {
+            Contexto::Pistas { ids, indice } => ids.get(indice).copied(),
+            _ => None,
+        };
+        seleccionada.or_else(|| self.pista_actual_id())
+    }
+
+    fn alternar_favorita(&mut self, ctx: &ContextoApp<'_>) {
+        let Some(pista_id) = self.pista_bajo_cursor() else {
+            return;
+        };
+        match consultas::favoritas::alternar(ctx.conn, pista_id) {
+            Ok(true) => {
+                self.favoritas.insert(pista_id);
+                let titulo = consultas::pistas_resumen_por_ids(ctx.conn, &[pista_id])
+                    .ok()
+                    .and_then(|pistas| pistas.into_iter().next())
+                    .map(|pista| pista.titulo)
+                    .unwrap_or_else(|| format!("#{pista_id}"));
+                self.notificar(NivelAviso::Info, format!("♥ {titulo}"));
+                ctx.scrobbling.enviar(ComandoScrobbling::Amar(pista_id));
+            }
+            Ok(false) => {
+                self.favoritas.remove(&pista_id);
+                self.notificar(NivelAviso::Info, "Quitada de favoritas".to_string());
+                ctx.scrobbling.enviar(ComandoScrobbling::Desamar(pista_id));
+            }
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudo actualizar la favorita: {error:#}"),
+            ),
+        }
+        if self.es_playlist_favoritas() {
+            self.recargar_detalle_playlist(ctx, PLAYLIST_FAVORITAS);
+        }
+    }
+
+    pub fn refrescar_favoritas(&mut self, ctx: &ContextoApp<'_>) {
+        match consultas::favoritas::ids(ctx.conn) {
+            Ok(ids) => self.favoritas = ids.into_iter().collect(),
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron leer las favoritas: {error:#}"),
+            ),
         }
     }
 
@@ -1575,6 +1738,7 @@ impl AppEstado {
                 self.escaneo_activo = None;
                 self.manejo_escaneo = None;
                 self.refrescar_contadores(ctx);
+                self.refrescar_favoritas(ctx);
                 if self.pantalla == Pantalla::Lista {
                     self.refrescar_vista(self.vista, ctx);
                 }
