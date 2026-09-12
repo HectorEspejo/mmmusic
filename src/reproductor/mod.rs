@@ -18,6 +18,8 @@ use self::mpv::{EventoMpv, RazonFin, ReproductorMpv, Valor};
 use crate::biblioteca::modelos::PistaResumen;
 use crate::biblioteca::{bd, consultas};
 use crate::eventos::{AppEvento, NivelAviso};
+use crate::scrobbling::ComandoScrobbling;
+use crate::scrobbling::regla;
 
 const TICK_REPRODUCTOR: Duration = Duration::from_millis(50);
 const INTERVALO_PUBLICACION: Duration = Duration::from_millis(250);
@@ -74,6 +76,7 @@ pub fn lanzar(
     ruta_bd: PathBuf,
     volumen_inicial: u8,
     tx_app: Sender<AppEvento>,
+    tx_scrobbling: Sender<ComandoScrobbling>,
 ) -> Result<(ManejoReproductor, watch::Receiver<EstadoReproduccion>)> {
     let mut conn = bd::abrir(&ruta_bd)?;
     bd::migrar(&mut conn)?;
@@ -128,6 +131,7 @@ pub fn lanzar(
                 rx_cmd,
                 rx_despertar,
                 tx_despertar,
+                tx_scrobbling,
                 cola_ms,
             ) {
                 Ok(reproductor) => reproductor,
@@ -156,9 +160,11 @@ struct ReproductorInterno {
     conn: Connection,
     tx_app: Sender<AppEvento>,
     tx_estado: watch::Sender<EstadoReproduccion>,
+    tx_scrobbling: Sender<ComandoScrobbling>,
     rx_cmd: Receiver<ComandoReproductor>,
     rx_despertar: Receiver<()>,
     historial_id: Option<i64>,
+    historial_inicio: Option<String>,
     tiempo_reproducido_ms: i64,
     ultima_pos_ms: i64,
     completada: bool,
@@ -181,6 +187,7 @@ impl ReproductorInterno {
         rx_cmd: Receiver<ComandoReproductor>,
         rx_despertar: Receiver<()>,
         tx_despertar: Sender<()>,
+        tx_scrobbling: Sender<ComandoScrobbling>,
         posicion_restauracion_ms: i64,
     ) -> Result<Self> {
         let mut conn = bd::abrir(&ruta_bd)?;
@@ -197,9 +204,11 @@ impl ReproductorInterno {
             conn,
             tx_app,
             tx_estado,
+            tx_scrobbling,
             rx_cmd,
             rx_despertar,
             historial_id: None,
+            historial_inicio: None,
             tiempo_reproducido_ms: 0,
             ultima_pos_ms: 0,
             completada: false,
@@ -464,12 +473,22 @@ impl ReproductorInterno {
         let Some(pista) = self.cola.actual().map(|item| item.pista.clone()) else {
             return;
         };
+        let restauracion = self.carga_en_pausa;
         match consultas::historial::registrar_inicio(&self.conn, pista.id) {
-            Ok(id) => self.historial_id = Some(id),
+            Ok((id, iniciado_en)) => {
+                self.historial_id = Some(id);
+                self.historial_inicio = Some(iniciado_en);
+            }
             Err(error) => {
                 warn!("no se pudo registrar el historial: {error:#}");
                 self.historial_id = None;
+                self.historial_inicio = None;
             }
+        }
+        if !restauracion && regla::elegible(pista.duracion_ms) {
+            let _ = self
+                .tx_scrobbling
+                .send(ComandoScrobbling::NowPlaying(pista.clone()));
         }
         self.tiempo_reproducido_ms = 0;
         self.ultima_pos_ms = 0;
@@ -568,15 +587,24 @@ impl ReproductorInterno {
         }
         self.ultima_pos_ms = ms;
         self.estado.posicion_ms = ms;
+        let duracion = self.estado.duracion_ms;
         if !self.completada
-            && self.estado.duracion_ms > 0
-            && self.tiempo_reproducido_ms.saturating_mul(2) >= self.estado.duracion_ms
+            && duracion > 0
+            && self.tiempo_reproducido_ms >= regla::umbral_ms(duracion)
         {
-            if let Some(historial_id) = self.historial_id
-                && let Err(error) =
+            if let Some(historial_id) = self.historial_id {
+                if let Err(error) =
                     consultas::historial::marcar_completada(&self.conn, historial_id)
-            {
-                warn!("no se pudo marcar el historial como completado: {error:#}");
+                {
+                    warn!("no se pudo marcar el historial como completado: {error:#}");
+                }
+                if regla::elegible(duracion) {
+                    let _ = self.tx_scrobbling.send(ComandoScrobbling::Completada {
+                        historial_id,
+                        pista: self.estado.pista_actual.clone().unwrap_or_default(),
+                        reproducido_en: self.historial_inicio.clone().unwrap_or_default(),
+                    });
+                }
             }
             self.completada = true;
         }
@@ -599,6 +627,7 @@ impl ReproductorInterno {
             .map(|pista| pista.duracion_ms)
             .unwrap_or(0);
         self.historial_id = None;
+        self.historial_inicio = None;
         self.tiempo_reproducido_ms = 0;
         self.ultima_pos_ms = 0;
         self.completada = false;
@@ -668,6 +697,7 @@ impl ReproductorInterno {
         self.estado.posicion_ms = 0;
         self.estado.duracion_ms = 0;
         self.historial_id = None;
+        self.historial_inicio = None;
         self.precargada = None;
         self.carga_en_pausa = false;
         self.persistir();

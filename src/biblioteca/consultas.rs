@@ -292,6 +292,18 @@ pub mod ajustes {
     pub fn leer_bool(conn: &Connection, clave: &str) -> Result<Option<bool>> {
         Ok(leer(conn, clave)?.map(|v| v == "1"))
     }
+
+    pub fn reescaneo_completo_pendiente(conn: &Connection) -> Result<bool> {
+        Ok(leer_bool(conn, "reescaneo_completo_pendiente")?.unwrap_or(false))
+    }
+
+    pub fn fijar_reescaneo_completo(conn: &Connection, pendiente: bool) -> Result<()> {
+        escribir(
+            conn,
+            "reescaneo_completo_pendiente",
+            if pendiente { "1" } else { "0" },
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,8 +519,8 @@ pub fn detalle_album(
     let mut sentencia = conn
         .prepare(
             "SELECT id, album_id, artista_id, titulo, titulo_norm, numero_pista, numero_disco,
-                    genero, duracion_ms, ruta, formato, tamano_bytes, modificado_en,
-                    bitrate_kbps, anadido_en, escaneo_id
+                    genero, carpeta, artista_album_etiquetado, duracion_ms, ruta, formato,
+                    tamano_bytes, modificado_en, bitrate_kbps, anadido_en, escaneo_id
                FROM PISTAS
               WHERE album_id = ?1
               ORDER BY numero_disco IS NULL, numero_disco, numero_pista IS NULL,
@@ -526,14 +538,16 @@ pub fn detalle_album(
                 numero_pista: fila.get(5)?,
                 numero_disco: fila.get(6)?,
                 genero: fila.get(7)?,
-                duracion_ms: fila.get(8)?,
-                ruta: fila.get(9)?,
-                formato: fila.get(10)?,
-                tamano_bytes: fila.get(11)?,
-                modificado_en: fila.get(12)?,
-                bitrate_kbps: fila.get(13)?,
-                anadido_en: fila.get(14)?,
-                escaneo_id: fila.get(15)?,
+                carpeta: fila.get(8)?,
+                artista_album_etiquetado: fila.get(9)?,
+                duracion_ms: fila.get(10)?,
+                ruta: fila.get(11)?,
+                formato: fila.get(12)?,
+                tamano_bytes: fila.get(13)?,
+                modificado_en: fila.get(14)?,
+                bitrate_kbps: fila.get(15)?,
+                anadido_en: fila.get(16)?,
+                escaneo_id: fila.get(17)?,
             })
         })
         .context("no se pudieron listar las pistas del álbum")?
@@ -870,8 +884,15 @@ pub mod playlist {
         carpeta: &Path,
         nombre_fichero: &str,
     ) -> Result<PathBuf> {
-        let nombre = playlist_de(conn, playlist_id)?;
         let pistas = pistas(conn, playlist_id)?;
+        exportar_m3u_pistas(carpeta, nombre_fichero, &pistas)
+    }
+
+    pub fn exportar_m3u_pistas(
+        carpeta: &Path,
+        nombre_fichero: &str,
+        pistas: &[PistaListado],
+    ) -> Result<PathBuf> {
         std::fs::create_dir_all(carpeta)
             .with_context(|| format!("no se pudo crear {}", carpeta.display()))?;
         let mut fichero = nombre_fichero.trim().to_string();
@@ -891,7 +912,6 @@ pub mod playlist {
         }
         std::fs::write(&ruta, contenido)
             .with_context(|| format!("no se pudo escribir {}", ruta.display()))?;
-        let _ = nombre;
         Ok(ruta)
     }
 
@@ -946,15 +966,6 @@ pub mod playlist {
             rutas.push(normalizar_lexica(&absoluta));
         }
         rutas
-    }
-
-    fn playlist_de(conn: &Connection, playlist_id: i64) -> Result<String> {
-        conn.query_row(
-            "SELECT nombre FROM PLAYLISTS WHERE id = ?1",
-            [playlist_id],
-            |fila| fila.get(0),
-        )
-        .context("no se pudo leer la playlist")
     }
 
     fn nombre_libre(conn: &Connection, base: &str) -> Result<String> {
@@ -1185,12 +1196,13 @@ fn condicion_busqueda(terminos: &[String], columnas: &[&str]) -> (String, Vec<St
 pub mod historial {
     use super::*;
 
-    pub fn registrar_inicio(conn: &Connection, pista_id: i64) -> Result<i64> {
+    pub fn registrar_inicio(conn: &Connection, pista_id: i64) -> Result<(i64, String)> {
+        let iniciado_en = bd::ahora_iso();
         conn.query_row(
             "INSERT INTO HISTORIAL_REPRODUCCION (pista_id, reproducido_en, completada)
              VALUES (?1, ?2, 0) RETURNING id",
-            params![pista_id, bd::ahora_iso()],
-            |fila| fila.get(0),
+            params![pista_id, iniciado_en],
+            |fila| Ok((fila.get(0)?, iniciado_en.clone())),
         )
         .context("no se pudo registrar el inicio de reproducción")
     }
@@ -1201,6 +1213,261 @@ pub mod historial {
             [historial_id],
         )
         .context("no se pudo marcar el historial como completado")?;
+        Ok(())
+    }
+}
+
+pub mod favoritas {
+    use super::*;
+
+    pub fn es_favorita(conn: &Connection, pista_id: i64) -> Result<bool> {
+        let existe: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM FAVORITAS WHERE pista_id = ?1",
+                [pista_id],
+                |fila| fila.get(0),
+            )
+            .context("no se pudo comprobar la favorita")?;
+        Ok(existe > 0)
+    }
+
+    pub fn alternar(conn: &Connection, pista_id: i64) -> Result<bool> {
+        if es_favorita(conn, pista_id)? {
+            conn.execute("DELETE FROM FAVORITAS WHERE pista_id = ?1", [pista_id])
+                .context("no se pudo quitar la favorita")?;
+            Ok(false)
+        } else {
+            conn.execute(
+                "INSERT INTO FAVORITAS (pista_id, marcada_en) VALUES (?1, ?2)
+                 ON CONFLICT(pista_id) DO NOTHING",
+                params![pista_id, bd::ahora_iso()],
+            )
+            .context("no se pudo marcar la favorita")?;
+            Ok(true)
+        }
+    }
+
+    pub fn ids(conn: &Connection) -> Result<Vec<i64>> {
+        let mut sentencia = conn
+            .prepare("SELECT pista_id FROM FAVORITAS")
+            .context("no se pudieron preparar las favoritas")?;
+        sentencia
+            .query_map([], |fila| fila.get(0))
+            .context("no se pudieron listar las favoritas")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer las favoritas")
+    }
+
+    pub fn listar(conn: &Connection) -> Result<Vec<PistaListado>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT p.id, p.titulo, ar.nombre, al.titulo, al.id, p.duracion_ms, al.anio,
+                        p.formato, al.caratula_ruta, p.ruta
+                   FROM FAVORITAS f
+                   JOIN PISTAS p ON p.id = f.pista_id
+                   JOIN ARTISTAS ar ON ar.id = p.artista_id
+                   JOIN ALBUMES al ON al.id = p.album_id
+                  ORDER BY f.marcada_en DESC, p.titulo_norm",
+            )
+            .context("no se pudieron preparar las pistas favoritas")?;
+        sentencia
+            .query_map([], pista_listado_desde_fila)
+            .context("no se pudieron listar las pistas favoritas")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer las pistas favoritas")
+    }
+
+    pub fn contar(conn: &Connection) -> Result<i64> {
+        conn.query_row("SELECT count(*) FROM FAVORITAS", [], |fila| fila.get(0))
+            .context("no se pudieron contar las favoritas")
+    }
+}
+
+pub mod envios {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EnvioPendiente {
+        pub id: i64,
+        pub tipo: String,
+        pub pista_id: i64,
+        pub historial_id: Option<i64>,
+        pub reproducido_en: Option<String>,
+        pub intentos: i64,
+        pub titulo: String,
+        pub artista: String,
+        pub album: String,
+        pub duracion_ms: i64,
+    }
+
+    pub fn encolar(
+        conn: &Connection,
+        servicio: &str,
+        tipo: &str,
+        pista_id: i64,
+        historial_id: Option<i64>,
+        reproducido_en: Option<&str>,
+    ) -> Result<i64> {
+        let tx = conn
+            .unchecked_transaction()
+            .context("no se pudo iniciar la transacción del envío")?;
+        if tipo != "scrobble" {
+            tx.execute(
+                "UPDATE ENVIOS
+                    SET estado = 'descartado', error_msg = 'reemplazado por un cambio posterior'
+                  WHERE servicio = ?1 AND pista_id = ?2
+                    AND tipo IN ('love', 'unlove')
+                    AND estado IN ('pendiente', 'error')",
+                params![servicio, pista_id],
+            )
+            .context("no se pudo descartar el love anterior")?;
+        }
+        let ahora = bd::ahora_iso();
+        let id = tx
+            .query_row(
+                "INSERT INTO ENVIOS
+                    (servicio, tipo, pista_id, historial_id, reproducido_en, estado,
+                     intentos, proximo_intento_en, creado_en)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pendiente', 0, ?6, ?6)
+                 RETURNING id",
+                params![
+                    servicio,
+                    tipo,
+                    pista_id,
+                    historial_id,
+                    reproducido_en,
+                    ahora
+                ],
+                |fila| fila.get(0),
+            )
+            .with_context(|| format!("no se pudo encolar el envío {tipo} para {servicio}"))?;
+        tx.commit().context("no se pudo confirmar el envío")?;
+        Ok(id)
+    }
+
+    pub fn pendientes(
+        conn: &Connection,
+        servicio: &str,
+        limite: usize,
+    ) -> Result<Vec<EnvioPendiente>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT e.id, e.tipo, e.pista_id, e.historial_id, e.reproducido_en, e.intentos,
+                        p.titulo, ar.nombre, al.titulo, p.duracion_ms
+                   FROM ENVIOS e
+                   JOIN PISTAS p ON p.id = e.pista_id
+                   JOIN ARTISTAS ar ON ar.id = p.artista_id
+                   JOIN ALBUMES al ON al.id = p.album_id
+                  WHERE e.servicio = ?1
+                    AND e.estado IN ('pendiente', 'error')
+                    AND e.proximo_intento_en <= ?2
+                  ORDER BY e.reproducido_en IS NULL, e.reproducido_en, e.id
+                  LIMIT ?3",
+            )
+            .context("no se pudieron preparar los envíos pendientes")?;
+        sentencia
+            .query_map(params![servicio, bd::ahora_iso(), limite as i64], |fila| {
+                Ok(EnvioPendiente {
+                    id: fila.get(0)?,
+                    tipo: fila.get(1)?,
+                    pista_id: fila.get(2)?,
+                    historial_id: fila.get(3)?,
+                    reproducido_en: fila.get(4)?,
+                    intentos: fila.get(5)?,
+                    titulo: fila.get(6)?,
+                    artista: fila.get(7)?,
+                    album: fila.get(8)?,
+                    duracion_ms: fila.get(9)?,
+                })
+            })
+            .context("no se pudieron listar los envíos pendientes")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer los envíos pendientes")
+    }
+
+    pub fn marcar_enviado(conn: &Connection, id: i64) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS
+                SET estado = 'enviado', enviado_en = ?1, error_msg = NULL
+              WHERE id = ?2",
+            params![bd::ahora_iso(), id],
+        )
+        .context("no se pudo marcar el envío como enviado")?;
+        Ok(())
+    }
+
+    pub fn marcar_enviados(conn: &Connection, ids: &[i64]) -> Result<()> {
+        let tx = conn
+            .unchecked_transaction()
+            .context("no se pudo iniciar la transacción de envíos")?;
+        for id in ids {
+            tx.execute(
+                "UPDATE ENVIOS
+                    SET estado = 'enviado', enviado_en = ?1, error_msg = NULL
+                  WHERE id = ?2",
+                params![bd::ahora_iso(), id],
+            )
+            .context("no se pudo marcar el envío como enviado")?;
+        }
+        tx.commit().context("no se pudo confirmar los envíos")?;
+        Ok(())
+    }
+
+    pub fn marcar_error(
+        conn: &Connection,
+        id: i64,
+        mensaje: &str,
+        proximo_intento_en: &str,
+        intentos: i64,
+    ) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS
+                SET estado = 'error', error_msg = ?1, proximo_intento_en = ?2, intentos = ?3
+              WHERE id = ?4",
+            params![mensaje, proximo_intento_en, intentos, id],
+        )
+        .context("no se pudo marcar el error del envío")?;
+        Ok(())
+    }
+
+    pub fn descartar(conn: &Connection, id: i64, motivo: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS SET estado = 'descartado', error_msg = ?1 WHERE id = ?2",
+            params![motivo, id],
+        )
+        .context("no se pudo descartar el envío")?;
+        Ok(())
+    }
+
+    pub fn contar_pendientes(conn: &Connection, servicio: &str) -> Result<u32> {
+        conn.query_row(
+            "SELECT count(*) FROM ENVIOS WHERE servicio = ?1 AND estado IN ('pendiente', 'error')",
+            [servicio],
+            |fila| fila.get::<_, i64>(0),
+        )
+        .map(|total| total.max(0) as u32)
+        .context("no se pudieron contar los envíos pendientes")
+    }
+
+    pub fn reprogramar_errores_auth(conn: &Connection, servicio: &str) -> Result<usize> {
+        let filas = conn
+            .execute(
+                "UPDATE ENVIOS
+                    SET estado = 'pendiente', proximo_intento_en = ?1
+                  WHERE servicio = ?2 AND estado = 'error' AND error_msg LIKE 'auth:%'",
+                params![bd::ahora_iso(), servicio],
+            )
+            .context("no se pudieron reprogramar los errores de autenticación")?;
+        Ok(filas)
+    }
+
+    pub fn limpiar_errores_auth(conn: &Connection, servicio: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE ENVIOS SET error_msg = NULL
+              WHERE servicio = ?1 AND error_msg LIKE 'auth:%'",
+            [servicio],
+        )
+        .context("no se pudieron limpiar los errores de autenticación")?;
         Ok(())
     }
 }
@@ -1288,22 +1555,9 @@ mod pruebas {
     use super::*;
 
     fn bd_con_pistas(numero: i64) -> Connection {
-        let conn = Connection::open_in_memory().expect("memoria");
+        let mut conn = Connection::open_in_memory().expect("memoria");
         conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
-        conn.execute_batch(
-            "CREATE TABLE ARTISTAS (id INTEGER PRIMARY KEY, nombre TEXT NOT NULL, nombre_norm TEXT NOT NULL UNIQUE, creado_en TEXT NOT NULL);
-             CREATE TABLE ALBUMES (id INTEGER PRIMARY KEY, artista_id INTEGER NOT NULL REFERENCES ARTISTAS(id), titulo TEXT NOT NULL, titulo_norm TEXT NOT NULL, anio INTEGER, caratula_ruta TEXT, creado_en TEXT NOT NULL);
-             CREATE UNIQUE INDEX idx_albumes_artista_titulo ON ALBUMES(artista_id, titulo_norm);
-             CREATE TABLE ESCANEOS (id INTEGER PRIMARY KEY, iniciado_en TEXT NOT NULL, finalizado_en TEXT, estado TEXT NOT NULL, nuevas INTEGER NOT NULL DEFAULT 0, actualizadas INTEGER NOT NULL DEFAULT 0, eliminadas INTEGER NOT NULL DEFAULT 0, error_msg TEXT);
-             CREATE TABLE PISTAS (id INTEGER PRIMARY KEY, album_id INTEGER NOT NULL REFERENCES ALBUMES(id), artista_id INTEGER NOT NULL REFERENCES ARTISTAS(id), titulo TEXT NOT NULL, titulo_norm TEXT NOT NULL, numero_pista INTEGER, numero_disco INTEGER, genero TEXT, duracion_ms INTEGER NOT NULL, ruta TEXT NOT NULL UNIQUE, formato TEXT NOT NULL, tamano_bytes INTEGER NOT NULL, modificado_en INTEGER NOT NULL, bitrate_kbps INTEGER, anadido_en TEXT NOT NULL, escaneo_id INTEGER);
-             CREATE TABLE PLAYLISTS (id INTEGER PRIMARY KEY, nombre TEXT NOT NULL UNIQUE, creado_en TEXT NOT NULL, actualizado_en TEXT NOT NULL);
-             CREATE TABLE PLAYLIST_PISTAS (id INTEGER PRIMARY KEY, playlist_id INTEGER NOT NULL REFERENCES PLAYLISTS(id) ON DELETE CASCADE, pista_id INTEGER NOT NULL REFERENCES PISTAS(id) ON DELETE CASCADE, posicion INTEGER NOT NULL);
-             CREATE UNIQUE INDEX idx_playlist_pistas_posicion ON PLAYLIST_PISTAS(playlist_id, posicion);
-             CREATE TABLE COLA (id INTEGER PRIMARY KEY, pista_id INTEGER NOT NULL REFERENCES PISTAS(id) ON DELETE CASCADE, posicion INTEGER NOT NULL UNIQUE, posicion_orig INTEGER NOT NULL);
-             CREATE TABLE HISTORIAL_REPRODUCCION (id INTEGER PRIMARY KEY, pista_id INTEGER NOT NULL REFERENCES PISTAS(id) ON DELETE CASCADE, reproducido_en TEXT NOT NULL, completada INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE AJUSTES (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);",
-        )
-        .expect("esquema");
+        bd::migrar(&mut conn).expect("esquema");
         conn.execute(
             "INSERT INTO ARTISTAS (id, nombre, nombre_norm, creado_en) VALUES (1, 'ESPRIT 空想', 'esprit 空想', 'x')",
             [],

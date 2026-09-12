@@ -19,31 +19,10 @@ fn dibujar_lista(frame: &mut Frame, app: &AppEstado, area: Rect) {
     let interior = bloque.inner(area);
     frame.render_widget(bloque, area);
 
-    if app.playlists.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    " No hay playlists todavía.",
-                    Style::new().fg(app.paleta.texto),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    " N crea una · i importa M3U/M3U8 · P añade la selección",
-                    Style::new().fg(app.paleta.secundario),
-                )),
-            ]),
-            interior,
-        );
-        return;
-    }
-
-    let (inicio, fin) =
-        super::ventana(app.playlists.len(), app.seleccion, interior.height as usize);
-    let lineas: Vec<Line> = app.playlists[inicio..fin]
-        .iter()
-        .enumerate()
-        .map(|(desplazamiento, playlist)| {
-            let indice = inicio + desplazamiento;
+    let total = app.playlists.len() + 1;
+    let (inicio, fin) = super::ventana(total, app.seleccion, interior.height as usize);
+    let mut lineas: Vec<Line> = (inicio..fin)
+        .map(|indice| {
             let seleccionada = indice == app.seleccion && app.foco == Foco::Contenido;
             let estilo = if seleccionada {
                 Style::new()
@@ -58,15 +37,33 @@ fn dibujar_lista(frame: &mut Frame, app: &AppEstado, area: Rect) {
             } else {
                 Style::new().fg(app.paleta.secundario)
             };
-            Line::from(vec![
-                Span::styled(
-                    format!(" {}  ", super::truncar(&playlist.nombre, 40)),
-                    estilo,
-                ),
-                Span::styled(super::contar_pistas(playlist.num_pistas), sufijo),
-            ])
+            if indice == 0 {
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}  ", super::truncar(crate::app::NOMBRE_FAVORITAS, 40)),
+                        estilo,
+                    ),
+                    Span::styled(super::contar_pistas(app.favoritas.len() as i64), sufijo),
+                ])
+            } else {
+                let playlist = &app.playlists[indice - 1];
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}  ", super::truncar(&playlist.nombre, 40)),
+                        estilo,
+                    ),
+                    Span::styled(super::contar_pistas(playlist.num_pistas), sufijo),
+                ])
+            }
         })
         .collect();
+    if app.playlists.is_empty() {
+        lineas.push(Line::from(""));
+        lineas.push(Line::from(Span::styled(
+            " N crea una · i importa M3U/M3U8 · P añade la selección",
+            Style::new().fg(app.paleta.secundario),
+        )));
+    }
     frame.render_widget(
         Paragraph::new(lineas).style(Style::new().fg(app.paleta.texto).bg(app.paleta.fondo)),
         interior,

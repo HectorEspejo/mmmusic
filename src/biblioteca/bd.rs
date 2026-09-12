@@ -5,7 +5,10 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use tracing::info;
 
-const MIGRACIONES: &[(i32, &str)] = &[(1, include_str!("migraciones/001_inicial.sql"))];
+const MIGRACIONES: &[(i32, &str)] = &[
+    (1, include_str!("migraciones/001_inicial.sql")),
+    (2, include_str!("migraciones/002_recopilatorios_envios.sql")),
+];
 
 pub fn abrir(ruta: &Path) -> Result<Connection> {
     if let Some(padre) = ruta.parent() {
@@ -46,12 +49,57 @@ pub fn migrar(conn: &mut Connection) -> Result<i32> {
     Ok(version)
 }
 
-pub fn ahora_iso() -> String {
-    let segundos = SystemTime::now()
+pub fn ahora_unix() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    iso_desde_unix(segundos)
+        .unwrap_or(0)
+}
+
+pub fn ahora_iso() -> String {
+    iso_desde_unix(ahora_unix())
+}
+
+pub fn iso_en(segundos: i64) -> String {
+    iso_desde_unix(ahora_unix().saturating_add(segundos))
+}
+
+pub fn unix_desde_iso(texto: &str) -> Option<i64> {
+    if texto.len() != 20
+        || !texto.ends_with('Z')
+        || texto.as_bytes().get(4) != Some(&b'-')
+        || texto.as_bytes().get(7) != Some(&b'-')
+        || texto.as_bytes().get(10) != Some(&b'T')
+        || texto.as_bytes().get(13) != Some(&b':')
+        || texto.as_bytes().get(16) != Some(&b':')
+    {
+        return None;
+    }
+    let anio: i64 = texto.get(0..4)?.parse().ok()?;
+    let mes: u32 = texto.get(5..7)?.parse().ok()?;
+    let dia: u32 = texto.get(8..10)?.parse().ok()?;
+    let hora: i64 = texto.get(11..13)?.parse().ok()?;
+    let minuto: i64 = texto.get(14..16)?.parse().ok()?;
+    let segundo: i64 = texto.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&mes)
+        || !(1..=31).contains(&dia)
+        || hora > 23
+        || minuto > 59
+        || segundo > 59
+    {
+        return None;
+    }
+    Some(dias_desde_civil(anio, mes, dia) * 86_400 + hora * 3_600 + minuto * 60 + segundo)
+}
+
+fn dias_desde_civil(anio: i64, mes: u32, dia: u32) -> i64 {
+    let y = if mes <= 2 { anio - 1 } else { anio };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if mes > 2 { mes - 3 } else { mes + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + dia as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
 }
 
 pub fn iso_desde_unix(segundos: i64) -> String {
@@ -94,11 +142,22 @@ mod pruebas {
     }
 
     #[test]
+    fn unix_desde_iso_es_inversa() {
+        for segundos in [0, 1_000_000_000, 1_700_000_000, 1_735_689_599] {
+            assert_eq!(unix_desde_iso(&iso_desde_unix(segundos)), Some(segundos));
+        }
+        assert_eq!(unix_desde_iso("2026-09-12T10:30:00Z"), Some(1_789_209_000));
+        assert_eq!(unix_desde_iso("no es una fecha"), None);
+        assert_eq!(unix_desde_iso("2026-13-01T00:00:00Z"), None);
+        assert_eq!(unix_desde_iso("2026-09-12T25:00:00Z"), None);
+    }
+
+    #[test]
     fn migracion_crea_tablas_y_es_idempotente() {
         let mut conn = Connection::open_in_memory().expect("conexión en memoria");
         conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
         let version = migrar(&mut conn).expect("migración");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         for tabla in [
             "ARTISTAS",
             "ALBUMES",
@@ -109,6 +168,8 @@ mod pruebas {
             "HISTORIAL_REPRODUCCION",
             "ESCANEOS",
             "AJUSTES",
+            "ENVIOS",
+            "FAVORITAS",
         ] {
             let existe: i64 = conn
                 .query_row(
@@ -119,8 +180,16 @@ mod pruebas {
                 .expect("consulta");
             assert_eq!(existe, 1, "falta la tabla {tabla}");
         }
+        let pendiente: String = conn
+            .query_row(
+                "SELECT valor FROM AJUSTES WHERE clave = 'reescaneo_completo_pendiente'",
+                [],
+                |f| f.get(0),
+            )
+            .expect("bandera de reescaneo");
+        assert_eq!(pendiente, "1");
         let version2 = migrar(&mut conn).expect("segunda migración");
-        assert_eq!(version2, 1);
+        assert_eq!(version2, 2);
     }
 
     #[test]
@@ -136,12 +205,21 @@ mod pruebas {
              INSERT INTO PLAYLISTS (id, nombre, creado_en, actualizado_en) VALUES (1, 'P', 'x', 'x');
              INSERT INTO PLAYLIST_PISTAS (playlist_id, pista_id, posicion) VALUES (1, 1, 0);
              INSERT INTO COLA (pista_id, posicion, posicion_orig) VALUES (1, 0, 0);
-             INSERT INTO HISTORIAL_REPRODUCCION (pista_id, reproducido_en, completada) VALUES (1, 'x', 0);",
+             INSERT INTO HISTORIAL_REPRODUCCION (pista_id, reproducido_en, completada) VALUES (1, 'x', 0);
+             INSERT INTO ENVIOS (servicio, tipo, pista_id, historial_id, reproducido_en, proximo_intento_en, creado_en)
+                VALUES ('lastfm', 'scrobble', 1, 1, 'x', 'x', 'x');
+             INSERT INTO FAVORITAS (pista_id, marcada_en) VALUES (1, 'x');",
         )
         .expect("datos");
         conn.execute("DELETE FROM PISTAS WHERE id = 1", [])
             .expect("borrado");
-        for tabla in ["PLAYLIST_PISTAS", "COLA", "HISTORIAL_REPRODUCCION"] {
+        for tabla in [
+            "PLAYLIST_PISTAS",
+            "COLA",
+            "HISTORIAL_REPRODUCCION",
+            "ENVIOS",
+            "FAVORITAS",
+        ] {
             let filas: i64 = conn
                 .query_row(&format!("SELECT count(*) FROM {tabla}"), [], |f| f.get(0))
                 .expect("consulta");

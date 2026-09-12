@@ -8,7 +8,7 @@ use crate::app::AppEstado;
 
 pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
     let ancho = area.width.saturating_sub(4).clamp(20, 76);
-    let alto = area.height.saturating_sub(2).clamp(6, 32);
+    let alto = area.height.saturating_sub(2).clamp(6, 46);
     let destino = Rect {
         x: area.x + area.width.saturating_sub(ancho) / 2,
         y: area.y + area.height.saturating_sub(alto) / 2,
@@ -91,6 +91,20 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
         ("N / R / D", "nueva / renombrar / eliminar playlist"),
         ("e / i", "exportar / importar M3U8"),
         ("C", "vaciar la cola"),
+    ] {
+        lineas.push(Line::from(vec![
+            Span::styled(format!("   {k:<17} "), tecla),
+            Span::styled(d, descripcion),
+        ]));
+    }
+    añadir_seccion("Scrobbling y favoritas", &mut lineas);
+    for (k, d) in [
+        ("L", "marcar o quitar la favorita"),
+        ("Ctrl+s", "enviar pendientes de scrobbling ahora"),
+        (
+            "CLI",
+            "autorizar-lastfm · probar-servicios · reescanear --completo",
+        ),
     ] {
         lineas.push(Line::from(vec![
             Span::styled(format!("   {k:<17} "), tecla),

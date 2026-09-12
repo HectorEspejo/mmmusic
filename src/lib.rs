@@ -1,8 +1,11 @@
 pub mod app;
 pub mod biblioteca;
+pub mod cli;
 pub mod config;
+pub mod credenciales;
 pub mod eventos;
 pub mod mpris;
 pub mod reproductor;
+pub mod scrobbling;
 pub mod tema;
 pub mod ui;

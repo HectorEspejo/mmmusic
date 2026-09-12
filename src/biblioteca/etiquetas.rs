@@ -28,6 +28,7 @@ pub struct EtiquetasResueltas {
     pub titulo: String,
     pub artista: String,
     pub album_artista: String,
+    pub album_artista_etiquetado: bool,
     pub album: String,
     pub anio: Option<i64>,
     pub disco: i64,
@@ -153,6 +154,10 @@ pub fn resolver(crudas: EtiquetasCrudas, ruta: &Path) -> EtiquetasResueltas {
         .artista
         .filter(|a| !a.trim().is_empty())
         .unwrap_or_else(|| ARTISTA_DESCONOCIDO.to_string());
+    let album_artista_etiquetado = crudas
+        .album_artista
+        .as_deref()
+        .is_some_and(|a| !a.trim().is_empty());
     let album_artista = crudas
         .album_artista
         .filter(|a| !a.trim().is_empty())
@@ -165,6 +170,7 @@ pub fn resolver(crudas: EtiquetasCrudas, ruta: &Path) -> EtiquetasResueltas {
         titulo,
         artista,
         album_artista,
+        album_artista_etiquetado,
         album,
         anio: crudas.anio,
         disco: crudas.disco.unwrap_or(1),
@@ -236,6 +242,7 @@ mod pruebas {
         assert_eq!(resueltas.titulo, "02 Neon Rain");
         assert_eq!(resueltas.artista, ARTISTA_DESCONOCIDO);
         assert_eq!(resueltas.album_artista, ARTISTA_DESCONOCIDO);
+        assert!(!resueltas.album_artista_etiquetado);
         assert_eq!(resueltas.album, "Midnight Premiere");
         assert_eq!(resueltas.disco, 1);
         assert_eq!(resueltas.pista, None);
@@ -256,6 +263,7 @@ mod pruebas {
         };
         let resueltas = resolver(crudas, Path::new("/x/y.mp3"));
         assert_eq!(resueltas.album_artista, "Varios");
+        assert!(resueltas.album_artista_etiquetado);
         assert_eq!(resueltas.album, "Recopilatorio");
         assert_eq!(resueltas.disco, 2);
         assert_eq!(resueltas.pista, Some(3));

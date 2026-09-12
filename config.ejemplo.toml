@@ -34,3 +34,11 @@ fuente = "omarchy"
 # Nombres de color ANSI del tema para el acento y el progreso.
 acento = "blue"
 progreso = "green"
+
+[scrobbling]
+# Activa el envío de escuchas a ListenBrainz (requiere token en credenciales.toml).
+listenbrainz = false
+# Activa el envío de escuchas y favoritas a Last.fm (requiere autorizar-lastfm).
+lastfm = false
+# Envía "now playing" al cargar una pista elegible.
+now_playing = true

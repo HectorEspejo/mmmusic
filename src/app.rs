@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -18,6 +19,8 @@ use crate::config::Config;
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use crate::reproductor::estado::{Estado, EstadoReproduccion};
 use crate::reproductor::{ComandoReproductor, ManejoReproductor};
+use crate::scrobbling::estado::EstadoScrobbling;
+use crate::scrobbling::{ComandoScrobbling, ManejoScrobbling};
 use crate::tema::{self, Paleta};
 use crate::ui::Iconos;
 use crate::ui::componentes::imagen::CacheCaratulas;
@@ -25,6 +28,8 @@ use crate::ui::teclas::{Accion, traducir};
 
 const DURACION_TOAST: Duration = Duration::from_secs(3);
 const PAGINA_SALTOS: usize = 10;
+pub const PLAYLIST_FAVORITAS: i64 = -1;
+pub const NOMBRE_FAVORITAS: &str = "♥ Favoritas";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vista {
@@ -108,6 +113,10 @@ pub enum AccionDialogo {
     RenombrarPlaylist(i64),
     EliminarPlaylist(i64),
     ExportarPlaylist(i64),
+    ExportarFavoritas,
+    ExportarFavoritasConfirmado {
+        nombre_fichero: String,
+    },
     ImportarPlaylist,
     AnadirAPlaylist {
         pistas: Vec<i64>,
@@ -185,6 +194,7 @@ pub struct ContextoApp<'a> {
     pub ruta_bd: &'a Path,
     pub dir_caratulas: &'a Path,
     pub reproductor: &'a ManejoReproductor,
+    pub scrobbling: &'a ManejoScrobbling,
 }
 
 enum Contexto {
@@ -203,6 +213,8 @@ pub struct AppEstado {
     pub foco: Foco,
     pub pila: Vec<(Vista, Pantalla)>,
     pub estado_reproductor: EstadoReproduccion,
+    pub estado_scrobbling: EstadoScrobbling,
+    pub favoritas: HashSet<i64>,
     pub total_pistas: i64,
     pub playlists: Vec<PlaylistResumen>,
     pub pistas: Vec<PistaListado>,
@@ -225,6 +237,8 @@ pub struct AppEstado {
     pub ultima_busqueda: String,
     pub seleccion: usize,
     pub seleccion_cola: usize,
+    pub bloque_inicio: usize,
+    pub columna_inicio: usize,
     pub columnas_rejilla: usize,
     pub escaneo_activo: Option<ProgresoEscaneo>,
     pub manejo_escaneo: Option<ManejoEscaneo>,
@@ -256,6 +270,8 @@ impl AppEstado {
             foco: Foco::Contenido,
             pila: Vec::new(),
             estado_reproductor,
+            estado_scrobbling: EstadoScrobbling::default(),
+            favoritas: HashSet::new(),
             total_pistas,
             playlists: Vec::new(),
             pistas: Vec::new(),
@@ -278,6 +294,8 @@ impl AppEstado {
             ultima_busqueda: String::new(),
             seleccion: 0,
             seleccion_cola: 0,
+            bloque_inicio: 0,
+            columna_inicio: 0,
             columnas_rejilla: 4,
             escaneo_activo: None,
             manejo_escaneo: None,
@@ -351,6 +369,7 @@ impl AppEstado {
             }
             AppEvento::Notificacion(nivel, texto) => self.notificar(nivel, texto),
             AppEvento::CaratulaLista(_album_id) => {}
+            AppEvento::Scrobbling(estado) => self.estado_scrobbling = estado,
             AppEvento::Salir => {
                 self.debe_salir = true;
             }
@@ -382,6 +401,10 @@ impl AppEstado {
                 self.pila.clear();
                 self.pantalla = Pantalla::Lista;
                 self.seleccion = 0;
+                if vista == Vista::Inicio {
+                    self.bloque_inicio = 0;
+                    self.columna_inicio = 0;
+                }
                 self.vista = vista;
                 self.refrescar_vista(vista, ctx);
             }
@@ -404,6 +427,12 @@ impl AppEstado {
                 }
             }
             Accion::Reescanear => self.iniciar_escaneo(ctx),
+            Accion::EnviarScrobbles => {
+                ctx.scrobbling.enviar(ComandoScrobbling::EnviarAhora);
+                if self.estado_scrobbling.pendientes() > 0 {
+                    self.notificar(NivelAviso::Info, "Enviando pendientes de scrobbling…");
+                }
+            }
             Accion::RecargarTema => self.recargar_tema(),
             Accion::TeclaG => {
                 if self.pendiente_g {
@@ -419,12 +448,16 @@ impl AppEstado {
                 self.busqueda_enfocada = true;
                 self.foco = Foco::Contenido;
             }
+            Accion::Abajo if self.vista == Vista::Inicio => self.mover_inicio(ctx, 1, 0),
             Accion::Abajo => self.mover_seleccion(ctx, 1),
+            Accion::Arriba if self.vista == Vista::Inicio => self.mover_inicio(ctx, -1, 0),
             Accion::Arriba => self.mover_seleccion(ctx, -1),
+            Accion::Derecha if self.vista == Vista::Inicio => self.mover_inicio(ctx, 0, 1),
             Accion::Derecha => match self.vista_pantalla_rejilla() {
                 true => self.mover_seleccion(ctx, 1),
                 false => self.abrir_seleccion(ctx),
             },
+            Accion::Izquierda if self.vista == Vista::Inicio => self.mover_inicio(ctx, 0, -1),
             Accion::Izquierda => match self.vista_pantalla_rejilla() {
                 true => self.mover_seleccion(ctx, -1),
                 false => self.volver(),
@@ -488,6 +521,7 @@ impl AppEstado {
                 } else if self.vista == Vista::Playlists
                     && self.pantalla == Pantalla::DetallePlaylist
                     && self.foco == Foco::Contenido
+                    && !self.es_playlist_favoritas()
                 {
                     self.quitar_pista_playlist(ctx);
                 }
@@ -537,6 +571,12 @@ impl AppEstado {
                         valor: format!("{}.m3u8", playlist.nombre),
                         accion: AccionDialogo::ExportarPlaylist(playlist.id),
                     });
+                } else if self.es_playlist_favoritas() {
+                    self.dialogo = Some(Dialogo::Texto {
+                        titulo: "Exportar a M3U8 (nombre de fichero)".to_string(),
+                        valor: "Favoritas.m3u8".to_string(),
+                        accion: AccionDialogo::ExportarFavoritas,
+                    });
                 }
             }
             Accion::ImportarPlaylist => {
@@ -550,6 +590,7 @@ impl AppEstado {
             Accion::AlternarPausa => {
                 ctx.reproductor.enviar(ComandoReproductor::AlternarPausa);
             }
+            Accion::AlternarFavorita => self.alternar_favorita(ctx),
             Accion::Siguiente => {
                 ctx.reproductor.enviar(ComandoReproductor::Siguiente);
             }
@@ -721,7 +762,7 @@ impl AppEstado {
                 .as_ref()
                 .map(|(_, pistas)| pistas.len())
                 .unwrap_or(0),
-            (Vista::Playlists, _) => self.playlists.len(),
+            (Vista::Playlists, _) => self.playlists.len() + 1,
             (Vista::Buscar, _) => {
                 self.resultados.artistas.len()
                     + self.resultados.albumes.len()
@@ -754,14 +795,80 @@ impl AppEstado {
             delta
         };
         self.seleccion = mover_indice(self.seleccion, total - 1, paso);
+        if self.vista == Vista::Inicio {
+            self.sincronizar_inicio_desde_seleccion();
+        }
         if self.vista == Vista::Pistas {
             self.asegurar_pagina(ctx);
         }
     }
 
+    fn inicio_bloque_len(&self, bloque: usize) -> usize {
+        match bloque {
+            0 => self.inicio.recientes.len(),
+            1 => self.inicio.anadidos.len(),
+            _ => self.inicio.redescubre.len(),
+        }
+    }
+
+    fn mover_inicio(&mut self, _ctx: &ContextoApp<'_>, delta_bloque: isize, delta_columna: isize) {
+        if self.foco != Foco::Contenido {
+            return;
+        }
+        if delta_bloque != 0 {
+            self.bloque_inicio = (self.bloque_inicio as isize + delta_bloque).clamp(0, 2) as usize;
+            let len = self.inicio_bloque_len(self.bloque_inicio);
+            self.columna_inicio = self.columna_inicio.min(len.saturating_sub(1));
+            if len == 0 {
+                self.columna_inicio = 0;
+            }
+        }
+        if delta_columna != 0 {
+            let len = self.inicio_bloque_len(self.bloque_inicio);
+            if len > 0 {
+                self.columna_inicio = (self.columna_inicio as isize + delta_columna)
+                    .clamp(0, len as isize - 1) as usize;
+            }
+        }
+        self.actualizar_seleccion_inicio();
+    }
+
+    fn actualizar_seleccion_inicio(&mut self) {
+        self.seleccion = match self.bloque_inicio {
+            0 => self.columna_inicio,
+            1 => self.inicio.recientes.len() + self.columna_inicio,
+            _ => self.inicio.recientes.len() + self.inicio.anadidos.len() + self.columna_inicio,
+        };
+    }
+
+    fn sincronizar_inicio_desde_seleccion(&mut self) {
+        let n_recientes = self.inicio.recientes.len();
+        let n_anadidos = self.inicio.anadidos.len();
+        if self.seleccion < n_recientes {
+            self.bloque_inicio = 0;
+            self.columna_inicio = self.seleccion;
+        } else if self.seleccion < n_recientes + n_anadidos {
+            self.bloque_inicio = 1;
+            self.columna_inicio = self.seleccion - n_recientes;
+        } else {
+            self.bloque_inicio = 2;
+            self.columna_inicio = self.seleccion - n_recientes - n_anadidos;
+        }
+        let len = self.inicio_bloque_len(self.bloque_inicio);
+        if len == 0 {
+            self.columna_inicio = 0;
+        } else {
+            self.columna_inicio = self.columna_inicio.min(len - 1);
+        }
+    }
+
     fn abrir_seleccion(&mut self, ctx: &ContextoApp<'_>) {
         if self.vista == Vista::Playlists && self.pantalla == Pantalla::Lista {
-            let Some(playlist) = self.playlists.get(self.seleccion) else {
+            if self.seleccion == 0 {
+                self.abrir_favoritas(ctx);
+                return;
+            }
+            let Some(playlist) = self.playlists.get(self.seleccion - 1) else {
                 return;
             };
             let playlist = playlist.clone();
@@ -1020,6 +1127,7 @@ impl AppEstado {
         if self.vista == Vista::Playlists
             && self.pantalla == Pantalla::DetallePlaylist
             && self.foco == Foco::Contenido
+            && !self.es_playlist_favoritas()
         {
             let Some((playlist, pistas)) = self.detalle_playlist.as_ref() else {
                 return;
@@ -1053,8 +1161,48 @@ impl AppEstado {
 
     fn playlist_seleccionada(&self) -> Option<PlaylistResumen> {
         match self.pantalla {
-            Pantalla::DetallePlaylist => self.detalle_playlist.as_ref().map(|(p, _)| p.clone()),
-            _ => self.playlists.get(self.seleccion).cloned(),
+            Pantalla::DetallePlaylist => self
+                .detalle_playlist
+                .as_ref()
+                .filter(|(playlist, _)| playlist.id != PLAYLIST_FAVORITAS)
+                .map(|(playlist, _)| playlist.clone()),
+            _ => self
+                .seleccion
+                .checked_sub(1)
+                .and_then(|indice| self.playlists.get(indice))
+                .cloned(),
+        }
+    }
+
+    fn es_playlist_favoritas(&self) -> bool {
+        if self.pantalla == Pantalla::DetallePlaylist {
+            return self
+                .detalle_playlist
+                .as_ref()
+                .is_some_and(|(playlist, _)| playlist.id == PLAYLIST_FAVORITAS);
+        }
+        self.vista == Vista::Playlists && self.pantalla == Pantalla::Lista && self.seleccion == 0
+    }
+
+    fn abrir_favoritas(&mut self, ctx: &ContextoApp<'_>) {
+        match consultas::favoritas::listar(ctx.conn) {
+            Ok(pistas) => {
+                self.pila.push((self.vista, self.pantalla));
+                self.detalle_playlist = Some((
+                    PlaylistResumen {
+                        id: PLAYLIST_FAVORITAS,
+                        nombre: NOMBRE_FAVORITAS.to_string(),
+                        num_pistas: pistas.len() as i64,
+                    },
+                    pistas,
+                ));
+                self.pantalla = Pantalla::DetallePlaylist;
+                self.seleccion = 0;
+            }
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron abrir las favoritas: {error:#}"),
+            ),
         }
     }
 
@@ -1084,7 +1232,12 @@ impl AppEstado {
             .as_ref()
             .map(|(playlist, _)| playlist.nombre.clone())
             .unwrap_or_default();
-        match consultas::playlist::pistas(ctx.conn, playlist_id) {
+        let resultado = if playlist_id == PLAYLIST_FAVORITAS {
+            consultas::favoritas::listar(ctx.conn)
+        } else {
+            consultas::playlist::pistas(ctx.conn, playlist_id)
+        };
+        match resultado {
             Ok(pistas) => {
                 let num_pistas = pistas.len() as i64;
                 self.detalle_playlist = Some((
@@ -1098,7 +1251,9 @@ impl AppEstado {
                 if self.seleccion >= num_pistas as usize {
                     self.seleccion = (num_pistas as usize).saturating_sub(1);
                 }
-                self.refrescar_playlists(ctx);
+                if playlist_id != PLAYLIST_FAVORITAS {
+                    self.refrescar_playlists(ctx);
+                }
             }
             Err(error) => self.notificar(
                 NivelAviso::Error,
@@ -1359,6 +1514,24 @@ impl AppEstado {
             } => {
                 self.exportar_playlist(ctx, playlist_id, &nombre_fichero);
             }
+            AccionDialogo::ExportarFavoritas => {
+                let carpeta = self.config.carpeta_playlists();
+                let ruta = carpeta.join(valor.trim());
+                if ruta.exists() {
+                    self.dialogo = Some(Dialogo::Confirmacion {
+                        titulo: "Sobrescribir fichero".to_string(),
+                        mensaje: format!("{} ya existe. ¿Sobrescribirlo?", ruta.display()),
+                        accion: AccionDialogo::ExportarFavoritasConfirmado {
+                            nombre_fichero: valor,
+                        },
+                    });
+                } else {
+                    self.exportar_favoritas(ctx, &valor);
+                }
+            }
+            AccionDialogo::ExportarFavoritasConfirmado { nombre_fichero } => {
+                self.exportar_favoritas(ctx, &nombre_fichero);
+            }
             AccionDialogo::ImportarPlaylist => {
                 let bruto = valor.trim();
                 if bruto.is_empty() {
@@ -1431,6 +1604,82 @@ impl AppEstado {
         }
     }
 
+    fn exportar_favoritas(&mut self, ctx: &ContextoApp<'_>, nombre_fichero: &str) {
+        let carpeta = self.config.carpeta_playlists();
+        let resultado = consultas::favoritas::listar(ctx.conn).and_then(|pistas| {
+            consultas::playlist::exportar_m3u_pistas(&carpeta, nombre_fichero, &pistas)
+        });
+        match resultado {
+            Ok(ruta) => self.notificar(NivelAviso::Info, format!("Exportada a {}", ruta.display())),
+            Err(error) => {
+                self.notificar(NivelAviso::Error, format!("No se pudo exportar: {error:#}"))
+            }
+        }
+    }
+
+    fn pista_actual_id(&self) -> Option<i64> {
+        self.estado_reproductor
+            .pista_actual
+            .as_ref()
+            .map(|pista| pista.id)
+    }
+
+    fn pista_bajo_cursor(&self) -> Option<i64> {
+        if self.foco == Foco::Cola {
+            return self
+                .estado_reproductor
+                .cola
+                .get(self.seleccion_cola)
+                .map(|pista| pista.id)
+                .or_else(|| self.pista_actual_id());
+        }
+        let seleccionada = match self.contexto() {
+            Contexto::Pistas { ids, indice } => ids.get(indice).copied(),
+            _ => None,
+        };
+        seleccionada.or_else(|| self.pista_actual_id())
+    }
+
+    fn alternar_favorita(&mut self, ctx: &ContextoApp<'_>) {
+        let Some(pista_id) = self.pista_bajo_cursor() else {
+            return;
+        };
+        match consultas::favoritas::alternar(ctx.conn, pista_id) {
+            Ok(true) => {
+                self.favoritas.insert(pista_id);
+                let titulo = consultas::pistas_resumen_por_ids(ctx.conn, &[pista_id])
+                    .ok()
+                    .and_then(|pistas| pistas.into_iter().next())
+                    .map(|pista| pista.titulo)
+                    .unwrap_or_else(|| format!("#{pista_id}"));
+                self.notificar(NivelAviso::Info, format!("♥ {titulo}"));
+                ctx.scrobbling.enviar(ComandoScrobbling::Amar(pista_id));
+            }
+            Ok(false) => {
+                self.favoritas.remove(&pista_id);
+                self.notificar(NivelAviso::Info, "Quitada de favoritas".to_string());
+                ctx.scrobbling.enviar(ComandoScrobbling::Desamar(pista_id));
+            }
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudo actualizar la favorita: {error:#}"),
+            ),
+        }
+        if self.es_playlist_favoritas() {
+            self.recargar_detalle_playlist(ctx, PLAYLIST_FAVORITAS);
+        }
+    }
+
+    pub fn refrescar_favoritas(&mut self, ctx: &ContextoApp<'_>) {
+        match consultas::favoritas::ids(ctx.conn) {
+            Ok(ids) => self.favoritas = ids.into_iter().collect(),
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron leer las favoritas: {error:#}"),
+            ),
+        }
+    }
+
     fn asegurar_pagina(&mut self, ctx: &ContextoApp<'_>) {
         let cargados = self.pistas.len();
         if cargados == 0 || self.total_pistas as usize <= cargados {
@@ -1476,6 +1725,15 @@ impl AppEstado {
                         format!("No se pudo cargar Inicio: {error:#}"),
                     ),
                 }
+                let total = self.inicio.recientes.len()
+                    + self.inicio.anadidos.len()
+                    + self.inicio.redescubre.len();
+                if total == 0 {
+                    self.seleccion = 0;
+                } else {
+                    self.seleccion = self.seleccion.min(total - 1);
+                }
+                self.sincronizar_inicio_desde_seleccion();
                 self.refrescar_playlists(ctx);
             }
             Vista::Artistas => match consultas::listar_artistas(ctx.conn) {
@@ -1563,6 +1821,7 @@ impl AppEstado {
                 self.escaneo_activo = None;
                 self.manejo_escaneo = None;
                 self.refrescar_contadores(ctx);
+                self.refrescar_favoritas(ctx);
                 if self.pantalla == Pantalla::Lista {
                     self.refrescar_vista(self.vista, ctx);
                 }
@@ -1588,6 +1847,10 @@ impl AppEstado {
     }
 
     pub fn iniciar_escaneo(&mut self, ctx: &ContextoApp<'_>) {
+        self.iniciar_escaneo_modo(ctx, escaner::ModoEscaneo::Incremental);
+    }
+
+    pub fn iniciar_escaneo_modo(&mut self, ctx: &ContextoApp<'_>, modo: escaner::ModoEscaneo) {
         if let Some(anterior) = self.manejo_escaneo.take() {
             escaner::cancelar_y_esperar(anterior);
         }
@@ -1596,11 +1859,17 @@ impl AppEstado {
             ctx.ruta_bd.to_path_buf(),
             raices,
             ctx.dir_caratulas.to_path_buf(),
+            modo,
             ctx.tx_app.clone(),
         ) {
             Ok(manejo) => {
                 self.manejo_escaneo = Some(manejo);
-                self.notificar(NivelAviso::Info, "Escaneando biblioteca…");
+                let mensaje = if modo.es_completo() {
+                    "Reescaneando la biblioteca al completo…"
+                } else {
+                    "Escaneando biblioteca…"
+                };
+                self.notificar(NivelAviso::Info, mensaje);
             }
             Err(error) => {
                 self.notificar(NivelAviso::Error, format!("No se pudo escanear: {error:#}"));

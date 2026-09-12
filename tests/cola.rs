@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use mmmusic::biblioteca::bd;
+use mmmusic::biblioteca::escaner::{self, ModoEscaneo};
 use mmmusic::biblioteca::modelos::PistaResumen;
-use mmmusic::biblioteca::{bd, escaner};
 use mmmusic::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use mmmusic::reproductor::cola::Cola;
 use mmmusic::reproductor::estado::{Estado, Repeticion};
@@ -53,8 +54,14 @@ fn preparar_bd_con_fixtures(temporal: &Path) -> PathBuf {
 
     let (tx, rx) = mpsc::channel();
     let dir_caratulas = ruta_bd.parent().unwrap_or(Path::new(".")).join("caratulas");
-    let manejo =
-        escaner::lanzar(ruta_bd.clone(), vec![biblioteca], dir_caratulas, tx).expect("escanear");
+    let manejo = escaner::lanzar(
+        ruta_bd.clone(),
+        vec![biblioteca],
+        dir_caratulas,
+        ModoEscaneo::Incremental,
+        tx,
+    )
+    .expect("escanear");
     assert!(manejo.esperar(Duration::from_secs(30)));
     let limite = Instant::now() + Duration::from_secs(30);
     while Instant::now() < limite {
@@ -103,8 +110,9 @@ fn reproduce_persiste_y_restaura_la_cola() {
     assert_eq!(ids.len(), 3);
 
     let (tx, rx) = mpsc::channel();
+    let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
     let (manejo, _watch) =
-        reproductor::lanzar(ruta_bd.clone(), 70, tx).expect("lanzar reproductor");
+        reproductor::lanzar(ruta_bd.clone(), 70, tx, tx_scrobbling).expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
         pistas: ids.clone(),
         indice: 1,
@@ -167,7 +175,9 @@ fn tres_fallos_seguidos_pasan_a_detenido() {
     drop(conn);
 
     let (tx, rx) = mpsc::channel();
-    let (manejo, _watch) = reproductor::lanzar(ruta_bd, 50, tx).expect("lanzar reproductor");
+    let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
+    let (manejo, _watch) =
+        reproductor::lanzar(ruta_bd, 50, tx, tx_scrobbling).expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
         pistas: vec![1, 2, 3],
         indice: 0,
