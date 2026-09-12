@@ -1,5 +1,6 @@
 pub mod app;
 pub mod biblioteca;
+pub mod cli;
 pub mod config;
 pub mod eventos;
 pub mod mpris;

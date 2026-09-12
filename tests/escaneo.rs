@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use mmmusic::biblioteca::{bd, escaner};
+use mmmusic::biblioteca::bd;
+use mmmusic::biblioteca::escaner::{self, ModoEscaneo};
 use mmmusic::eventos::{AppEvento, EventoEscaneo};
 
 const FIXTURES: [&str; 6] = [
@@ -34,8 +35,14 @@ fn abrir_bd(ruta: &Path) -> rusqlite::Connection {
 fn escanear(ruta_bd: &Path, raices: Vec<PathBuf>) -> (Receiver<AppEvento>, escaner::ManejoEscaneo) {
     let (tx, rx) = mpsc::channel();
     let dir_caratulas = ruta_bd.parent().unwrap_or(Path::new(".")).join("caratulas");
-    let manejo =
-        escaner::lanzar(ruta_bd.to_path_buf(), raices, dir_caratulas, tx).expect("lanzar escaneo");
+    let manejo = escaner::lanzar(
+        ruta_bd.to_path_buf(),
+        raices,
+        dir_caratulas,
+        ModoEscaneo::Incremental,
+        tx,
+    )
+    .expect("lanzar escaneo");
     (rx, manejo)
 }
 
@@ -226,8 +233,14 @@ fn cancelar_conserva_lo_indexado() {
 
     let (tx, rx) = mpsc::channel();
     let dir_caratulas = ruta_bd.parent().unwrap_or(Path::new(".")).join("caratulas");
-    let manejo = escaner::lanzar(ruta_bd.clone(), vec![biblioteca.clone()], dir_caratulas, tx)
-        .expect("lanzar");
+    let manejo = escaner::lanzar(
+        ruta_bd.clone(),
+        vec![biblioteca.clone()],
+        dir_caratulas,
+        ModoEscaneo::Incremental,
+        tx,
+    )
+    .expect("lanzar");
     let limite = Instant::now() + Duration::from_secs(30);
     loop {
         match rx.recv_timeout(Duration::from_secs(10)) {

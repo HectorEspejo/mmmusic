@@ -292,6 +292,18 @@ pub mod ajustes {
     pub fn leer_bool(conn: &Connection, clave: &str) -> Result<Option<bool>> {
         Ok(leer(conn, clave)?.map(|v| v == "1"))
     }
+
+    pub fn reescaneo_completo_pendiente(conn: &Connection) -> Result<bool> {
+        Ok(leer_bool(conn, "reescaneo_completo_pendiente")?.unwrap_or(false))
+    }
+
+    pub fn fijar_reescaneo_completo(conn: &Connection, pendiente: bool) -> Result<()> {
+        escribir(
+            conn,
+            "reescaneo_completo_pendiente",
+            if pendiente { "1" } else { "0" },
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -507,8 +519,8 @@ pub fn detalle_album(
     let mut sentencia = conn
         .prepare(
             "SELECT id, album_id, artista_id, titulo, titulo_norm, numero_pista, numero_disco,
-                    genero, duracion_ms, ruta, formato, tamano_bytes, modificado_en,
-                    bitrate_kbps, anadido_en, escaneo_id
+                    genero, carpeta, artista_album_etiquetado, duracion_ms, ruta, formato,
+                    tamano_bytes, modificado_en, bitrate_kbps, anadido_en, escaneo_id
                FROM PISTAS
               WHERE album_id = ?1
               ORDER BY numero_disco IS NULL, numero_disco, numero_pista IS NULL,
@@ -526,14 +538,16 @@ pub fn detalle_album(
                 numero_pista: fila.get(5)?,
                 numero_disco: fila.get(6)?,
                 genero: fila.get(7)?,
-                duracion_ms: fila.get(8)?,
-                ruta: fila.get(9)?,
-                formato: fila.get(10)?,
-                tamano_bytes: fila.get(11)?,
-                modificado_en: fila.get(12)?,
-                bitrate_kbps: fila.get(13)?,
-                anadido_en: fila.get(14)?,
-                escaneo_id: fila.get(15)?,
+                carpeta: fila.get(8)?,
+                artista_album_etiquetado: fila.get(9)?,
+                duracion_ms: fila.get(10)?,
+                ruta: fila.get(11)?,
+                formato: fila.get(12)?,
+                tamano_bytes: fila.get(13)?,
+                modificado_en: fila.get(14)?,
+                bitrate_kbps: fila.get(15)?,
+                anadido_en: fila.get(16)?,
+                escaneo_id: fila.get(17)?,
             })
         })
         .context("no se pudieron listar las pistas del álbum")?
@@ -1288,22 +1302,9 @@ mod pruebas {
     use super::*;
 
     fn bd_con_pistas(numero: i64) -> Connection {
-        let conn = Connection::open_in_memory().expect("memoria");
+        let mut conn = Connection::open_in_memory().expect("memoria");
         conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
-        conn.execute_batch(
-            "CREATE TABLE ARTISTAS (id INTEGER PRIMARY KEY, nombre TEXT NOT NULL, nombre_norm TEXT NOT NULL UNIQUE, creado_en TEXT NOT NULL);
-             CREATE TABLE ALBUMES (id INTEGER PRIMARY KEY, artista_id INTEGER NOT NULL REFERENCES ARTISTAS(id), titulo TEXT NOT NULL, titulo_norm TEXT NOT NULL, anio INTEGER, caratula_ruta TEXT, creado_en TEXT NOT NULL);
-             CREATE UNIQUE INDEX idx_albumes_artista_titulo ON ALBUMES(artista_id, titulo_norm);
-             CREATE TABLE ESCANEOS (id INTEGER PRIMARY KEY, iniciado_en TEXT NOT NULL, finalizado_en TEXT, estado TEXT NOT NULL, nuevas INTEGER NOT NULL DEFAULT 0, actualizadas INTEGER NOT NULL DEFAULT 0, eliminadas INTEGER NOT NULL DEFAULT 0, error_msg TEXT);
-             CREATE TABLE PISTAS (id INTEGER PRIMARY KEY, album_id INTEGER NOT NULL REFERENCES ALBUMES(id), artista_id INTEGER NOT NULL REFERENCES ARTISTAS(id), titulo TEXT NOT NULL, titulo_norm TEXT NOT NULL, numero_pista INTEGER, numero_disco INTEGER, genero TEXT, duracion_ms INTEGER NOT NULL, ruta TEXT NOT NULL UNIQUE, formato TEXT NOT NULL, tamano_bytes INTEGER NOT NULL, modificado_en INTEGER NOT NULL, bitrate_kbps INTEGER, anadido_en TEXT NOT NULL, escaneo_id INTEGER);
-             CREATE TABLE PLAYLISTS (id INTEGER PRIMARY KEY, nombre TEXT NOT NULL UNIQUE, creado_en TEXT NOT NULL, actualizado_en TEXT NOT NULL);
-             CREATE TABLE PLAYLIST_PISTAS (id INTEGER PRIMARY KEY, playlist_id INTEGER NOT NULL REFERENCES PLAYLISTS(id) ON DELETE CASCADE, pista_id INTEGER NOT NULL REFERENCES PISTAS(id) ON DELETE CASCADE, posicion INTEGER NOT NULL);
-             CREATE UNIQUE INDEX idx_playlist_pistas_posicion ON PLAYLIST_PISTAS(playlist_id, posicion);
-             CREATE TABLE COLA (id INTEGER PRIMARY KEY, pista_id INTEGER NOT NULL REFERENCES PISTAS(id) ON DELETE CASCADE, posicion INTEGER NOT NULL UNIQUE, posicion_orig INTEGER NOT NULL);
-             CREATE TABLE HISTORIAL_REPRODUCCION (id INTEGER PRIMARY KEY, pista_id INTEGER NOT NULL REFERENCES PISTAS(id) ON DELETE CASCADE, reproducido_en TEXT NOT NULL, completada INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE AJUSTES (clave TEXT PRIMARY KEY, valor TEXT NOT NULL);",
-        )
-        .expect("esquema");
+        bd::migrar(&mut conn).expect("esquema");
         conn.execute(
             "INSERT INTO ARTISTAS (id, nombre, nombre_norm, creado_en) VALUES (1, 'ESPRIT 空想', 'esprit 空想', 'x')",
             [],

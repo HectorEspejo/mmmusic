@@ -1,12 +1,16 @@
 use std::path::Path;
+use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use crossterm::event::{self, Event as EventoCrossterm};
 use mmmusic::app::{AppEstado, ContextoApp, Vista};
+use mmmusic::biblioteca::escaner::ModoEscaneo;
 use mmmusic::biblioteca::{bd, consultas};
+use mmmusic::cli::{self, Cli, Comando};
 use mmmusic::config::{Config, Rutas};
 use mmmusic::eventos::{AppEvento, NivelAviso};
 use mmmusic::mpris;
@@ -23,7 +27,22 @@ use tracing_subscriber::EnvFilter;
 
 const TICK: Duration = Duration::from_millis(250);
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let resultado: Result<u8> = match cli.comando {
+        Some(Comando::Reescanear { completo }) => cli::ejecutar_reescanear(completo),
+        None => ejecutar_tui().map(|()| 0),
+    };
+    match resultado {
+        Ok(codigo) => ExitCode::from(codigo),
+        Err(error) => {
+            eprintln!("mmmusic: {error:#}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn ejecutar_tui() -> Result<()> {
     let rutas = Rutas::detectar()?;
     rutas.crear_directorios()?;
     let _guardia_logs = iniciar_logs(&rutas)?;
@@ -33,6 +52,7 @@ fn main() -> Result<()> {
     if consultas::escaneos::marcar_huerfanos(&conn)? > 0 {
         tracing::warn!("se marcaron escaneos interrumpidos como error");
     }
+    let reescaneo_pendiente = consultas::ajustes::reescaneo_completo_pendiente(&conn)?;
     let (paleta, aviso_tema) = tema::cargar(&carga.config.tema, &rutas.fichero_tema);
     let total_pistas = consultas::contar_pistas(&conn)?;
     let (tx_app, rx_app) = mpsc::channel();
@@ -90,7 +110,13 @@ fn main() -> Result<()> {
         };
         app.refrescar_contadores(&ctx);
         app.refrescar_vista(Vista::Inicio, &ctx);
-        if carga.config.biblioteca.escanear_al_arrancar {
+        if reescaneo_pendiente {
+            app.notificar(
+                NivelAviso::Aviso,
+                "Actualizando la biblioteca para agrupar recopilatorios…",
+            );
+            app.iniciar_escaneo_modo(&ctx, ModoEscaneo::Completo);
+        } else if carga.config.biblioteca.escanear_al_arrancar {
             app.iniciar_escaneo(&ctx);
         }
     }

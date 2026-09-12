@@ -24,6 +24,8 @@ pub struct Album {
     pub titulo_norm: String,
     pub anio: Option<i64>,
     pub caratula_ruta: Option<String>,
+    pub varios_artistas: bool,
+    pub carpeta: Option<String>,
     pub creado_en: String,
 }
 
@@ -68,6 +70,8 @@ pub struct Pista {
     pub numero_pista: Option<i64>,
     pub numero_disco: Option<i64>,
     pub genero: Option<String>,
+    pub carpeta: String,
+    pub artista_album_etiquetado: bool,
     pub duracion_ms: i64,
     pub ruta: String,
     pub formato: String,

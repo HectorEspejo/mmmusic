@@ -1588,6 +1588,10 @@ impl AppEstado {
     }
 
     pub fn iniciar_escaneo(&mut self, ctx: &ContextoApp<'_>) {
+        self.iniciar_escaneo_modo(ctx, escaner::ModoEscaneo::Incremental);
+    }
+
+    pub fn iniciar_escaneo_modo(&mut self, ctx: &ContextoApp<'_>, modo: escaner::ModoEscaneo) {
         if let Some(anterior) = self.manejo_escaneo.take() {
             escaner::cancelar_y_esperar(anterior);
         }
@@ -1596,11 +1600,17 @@ impl AppEstado {
             ctx.ruta_bd.to_path_buf(),
             raices,
             ctx.dir_caratulas.to_path_buf(),
+            modo,
             ctx.tx_app.clone(),
         ) {
             Ok(manejo) => {
                 self.manejo_escaneo = Some(manejo);
-                self.notificar(NivelAviso::Info, "Escaneando biblioteca…");
+                let mensaje = if modo.es_completo() {
+                    "Reescaneando la biblioteca al completo…"
+                } else {
+                    "Escaneando biblioteca…"
+                };
+                self.notificar(NivelAviso::Info, mensaje);
             }
             Err(error) => {
                 self.notificar(NivelAviso::Error, format!("No se pudo escanear: {error:#}"));

@@ -17,12 +17,25 @@ use super::caratulas;
 use super::consultas;
 use super::etiquetas;
 use super::modelos::EstadoEscaneo;
+use super::recopilatorios::{self, GrupoCandidato};
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso, ResumenEscaneo};
 
 const MAX_TAMANO_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const COMMIT_CADA: u64 = 200;
 const PROGRESO_CADA: u64 = 50;
 const ESPERA_CANCELACION: Duration = Duration::from_secs(3);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModoEscaneo {
+    Incremental,
+    Completo,
+}
+
+impl ModoEscaneo {
+    pub fn es_completo(self) -> bool {
+        matches!(self, ModoEscaneo::Completo)
+    }
+}
 
 pub struct ManejoEscaneo {
     cancelacion: Arc<AtomicBool>,
@@ -56,6 +69,7 @@ pub fn lanzar(
     ruta_bd: PathBuf,
     raices: Vec<PathBuf>,
     dir_caratulas: PathBuf,
+    modo: ModoEscaneo,
     tx: Sender<AppEvento>,
 ) -> Result<ManejoEscaneo> {
     let cancelacion = Arc::new(AtomicBool::new(false));
@@ -64,7 +78,7 @@ pub fn lanzar(
     thread::Builder::new()
         .name("escaner".to_string())
         .spawn(move || {
-            if let Err(error) = ejecutar(&ruta_bd, &raices, &dir_caratulas, &bandera, &tx) {
+            if let Err(error) = ejecutar(&ruta_bd, &raices, &dir_caratulas, modo, &bandera, &tx) {
                 tracing::error!("escaneo interrumpido: {error:#}");
                 let _ = tx.send(AppEvento::Escaneo(EventoEscaneo::Error {
                     mensaje: format!("{error:#}"),
@@ -90,6 +104,7 @@ fn ejecutar(
     ruta_bd: &Path,
     raices: &[PathBuf],
     dir_caratulas: &Path,
+    modo: ModoEscaneo,
     cancelacion: &AtomicBool,
     tx: &Sender<AppEvento>,
 ) -> Result<()> {
@@ -105,6 +120,7 @@ fn ejecutar(
         escaneo_id,
         raices,
         dir_caratulas,
+        modo,
         cancelacion,
         tx,
         &mut resumen,
@@ -119,6 +135,9 @@ fn ejecutar(
                 resumen.eliminadas,
                 None,
             )?;
+            if modo.es_completo() && estado == EstadoEscaneo::Completado {
+                consultas::ajustes::fijar_reescaneo_completo(&conn, false)?;
+            }
             Ok(())
         }
         Err(error) => {
@@ -137,11 +156,13 @@ fn ejecutar(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ejecutar_interno(
     conn: &mut Connection,
     escaneo_id: i64,
     raices: &[PathBuf],
     dir_caratulas: &Path,
+    modo: ModoEscaneo,
     cancelacion: &AtomicBool,
     tx: &Sender<AppEvento>,
     resumen: &mut ResumenEscaneo,
@@ -168,16 +189,27 @@ fn ejecutar_interno(
         .context("no se pudo iniciar la transacción de escaneo")?;
     let mut procesadas = 0u64;
     let mut cancelado = false;
+    let mut grupos: HashSet<GrupoCandidato> = HashSet::new();
     for ruta in &ficheros {
         if cancelacion.load(Ordering::SeqCst) {
             cancelado = true;
             break;
         }
-        match procesar_fichero(&tx_bd, ruta, escaneo_id) {
-            Ok(Resultado::Nueva) => resumen.nuevas += 1,
-            Ok(Resultado::Actualizada) => resumen.actualizadas += 1,
-            Ok(Resultado::SinCambios) => {}
-            Ok(Resultado::Omitida) => resumen.omitidas += 1,
+        match procesar_fichero(&tx_bd, ruta, escaneo_id, modo.es_completo()) {
+            Ok((Resultado::Nueva, grupo)) => {
+                resumen.nuevas += 1;
+                if let Some(grupo) = grupo {
+                    grupos.insert(grupo);
+                }
+            }
+            Ok((Resultado::Actualizada, grupo)) => {
+                resumen.actualizadas += 1;
+                if let Some(grupo) = grupo {
+                    grupos.insert(grupo);
+                }
+            }
+            Ok((Resultado::SinCambios, _)) => {}
+            Ok((Resultado::Omitida, _)) => resumen.omitidas += 1,
             Err(error) => return Err(error),
         }
         procesadas += 1;
@@ -204,6 +236,13 @@ fn ejecutar_interno(
     }
 
     eliminar_no_vistas(conn, escaneo_id, &raices_validas, resumen)?;
+
+    let grupos: Vec<GrupoCandidato> = if modo.es_completo() {
+        recopilatorios::grupos_candidatos(conn)?
+    } else {
+        grupos.into_iter().collect()
+    };
+    recopilatorios::consolidar(conn, &grupos)?;
     limpiar_huerfanos(conn)?;
 
     match caratulas::procesar_pendientes(conn, dir_caratulas, Some(cancelacion)) {
@@ -263,18 +302,23 @@ fn recoger_ficheros(raices: &[PathBuf], cancelacion: &AtomicBool) -> Vec<PathBuf
     ficheros
 }
 
-fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<Resultado> {
+fn procesar_fichero(
+    conn: &Connection,
+    ruta: &Path,
+    escaneo_id: i64,
+    completo: bool,
+) -> Result<(Resultado, Option<GrupoCandidato>)> {
     let metadatos = match fs::metadata(ruta) {
         Ok(metadatos) => metadatos,
         Err(error) => {
             warn!(ruta = %ruta.display(), "no se pudo leer el fichero: {error}");
-            return Ok(Resultado::Omitida);
+            return Ok((Resultado::Omitida, None));
         }
     };
     let tamano = metadatos.len();
     if tamano > MAX_TAMANO_BYTES {
         warn!(ruta = %ruta.display(), "fichero mayor de 2 GB omitido");
-        return Ok(Resultado::Omitida);
+        return Ok((Resultado::Omitida, None));
     }
     let modificado = metadatos
         .modified()
@@ -283,6 +327,10 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let ruta_texto = ruta.to_string_lossy().to_string();
+    let carpeta = ruta
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     let existente: Option<(i64, i64, i64)> = conn
         .query_row(
@@ -293,7 +341,8 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
         .optional()
         .with_context(|| format!("no se pudo consultar la pista {}", ruta.display()))?;
 
-    if let Some((id, modificado_previo, tamano_previo)) = existente
+    if !completo
+        && let Some((id, modificado_previo, tamano_previo)) = existente
         && modificado_previo == modificado
         && tamano_previo == tamano as i64
     {
@@ -302,19 +351,19 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
             params![escaneo_id, id],
         )
         .with_context(|| format!("no se pudo actualizar el escaneo de {}", ruta.display()))?;
-        return Ok(Resultado::SinCambios);
+        return Ok((Resultado::SinCambios, None));
     }
 
     let crudas = match etiquetas::leer(ruta) {
         Ok(crudas) => crudas,
         Err(error) => {
             warn!(ruta = %ruta.display(), "etiquetas ilegibles: {error:#}");
-            return Ok(Resultado::Omitida);
+            return Ok((Resultado::Omitida, None));
         }
     };
     if crudas.duracion_ms.unwrap_or(0) <= 0 {
         warn!(ruta = %ruta.display(), "sin duración detectable; omitida");
-        return Ok(Resultado::Omitida);
+        return Ok((Resultado::Omitida, None));
     }
     let etiquetas = etiquetas::resolver(crudas, ruta);
     let artista_id = asegurar_artista(conn, &etiquetas.artista)?;
@@ -322,6 +371,11 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
     let album_id = asegurar_album(conn, album_artista_id, &etiquetas)?;
     let formato = etiquetas::formato_de_ruta(ruta).unwrap_or("desconocido");
     let titulo_norm = etiquetas::normalizar(&etiquetas.titulo);
+    let album_titulo_norm = etiquetas::normalizar(&etiquetas.album);
+    let grupo = GrupoCandidato {
+        carpeta: carpeta.clone(),
+        titulo_norm: album_titulo_norm,
+    };
 
     if let Some((id, _, _)) = existente {
         conn.execute(
@@ -329,8 +383,9 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
                 SET album_id = ?1, artista_id = ?2, titulo = ?3, titulo_norm = ?4,
                     numero_pista = ?5, numero_disco = ?6, genero = ?7, duracion_ms = ?8,
                     formato = ?9, tamano_bytes = ?10, modificado_en = ?11,
-                    bitrate_kbps = ?12, escaneo_id = ?13
-              WHERE id = ?14",
+                    bitrate_kbps = ?12, escaneo_id = ?13, carpeta = ?14,
+                    artista_album_etiquetado = ?15
+              WHERE id = ?16",
             params![
                 album_id,
                 artista_id,
@@ -345,18 +400,20 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
                 modificado,
                 etiquetas.bitrate_kbps,
                 escaneo_id,
+                carpeta,
+                etiquetas.album_artista_etiquetado,
                 id
             ],
         )
         .with_context(|| format!("no se pudo actualizar la pista {}", ruta.display()))?;
-        Ok(Resultado::Actualizada)
+        Ok((Resultado::Actualizada, Some(grupo)))
     } else {
         conn.execute(
             "INSERT INTO PISTAS
                 (album_id, artista_id, titulo, titulo_norm, numero_pista, numero_disco,
                  genero, duracion_ms, ruta, formato, tamano_bytes, modificado_en,
-                 bitrate_kbps, anadido_en, escaneo_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                 bitrate_kbps, anadido_en, escaneo_id, carpeta, artista_album_etiquetado)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 album_id,
                 artista_id,
@@ -372,11 +429,13 @@ fn procesar_fichero(conn: &Connection, ruta: &Path, escaneo_id: i64) -> Result<R
                 modificado,
                 etiquetas.bitrate_kbps,
                 bd::ahora_iso(),
-                escaneo_id
+                escaneo_id,
+                carpeta,
+                etiquetas.album_artista_etiquetado
             ],
         )
         .with_context(|| format!("no se pudo insertar la pista {}", ruta.display()))?;
-        Ok(Resultado::Nueva)
+        Ok((Resultado::Nueva, Some(grupo)))
     }
 }
 
@@ -401,7 +460,7 @@ fn asegurar_album(
     conn.query_row(
         "INSERT INTO ALBUMES (artista_id, titulo, titulo_norm, anio, caratula_ruta, creado_en)
          VALUES (?1, ?2, ?3, ?4, NULL, ?5)
-         ON CONFLICT(artista_id, titulo_norm) DO UPDATE SET
+         ON CONFLICT(artista_id, titulo_norm) WHERE varios_artistas = 0 DO UPDATE SET
              anio = COALESCE(excluded.anio, ALBUMES.anio),
              titulo = excluded.titulo
          RETURNING id",
@@ -487,6 +546,7 @@ mod pruebas {
             ruta_bd.clone(),
             vec![],
             ruta_bd.parent().unwrap_or(Path::new(".")).join("caratulas"),
+            ModoEscaneo::Incremental,
             tx,
         )
         .expect("lanzar");
