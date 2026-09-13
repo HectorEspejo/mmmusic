@@ -2,9 +2,10 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::bd;
+use super::etiquetas;
 use super::modelos::{
-    AlbumResumen, ArtistaResumen, DetalleArtista, Escaneo, EstadoEscaneo, Inicio, Pista,
-    PistaListado, PistaResumen, PlaylistResumen,
+    AlbumResumen, ArtistaResumen, DetalleArtista, ElementoCola, Emisora, EmisoraResumen, Escaneo,
+    EstadoEscaneo, Inicio, Pista, PistaListado, PistaResumen, PlaylistResumen, TituloEmisora,
 };
 
 pub const PAGINA_PISTAS: usize = 500;
@@ -171,6 +172,78 @@ pub fn pistas_resumen_por_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<Pist
     Ok(resumenes)
 }
 
+pub fn emisoras_resumen_por_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<EmisoraResumen>> {
+    let mut resumenes = Vec::with_capacity(ids.len());
+    for lote in ids.chunks(900) {
+        let marcadores = (1..=lote.len())
+            .map(|indice| format!("?{indice}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT id, nombre, url, pais, codec, bitrate_kbps, logo_url, logo_ruta,
+                    favorita, ultima_reproduccion
+               FROM EMISORAS
+              WHERE id IN ({marcadores})"
+        );
+        let parametros = rusqlite::params_from_iter(lote.iter());
+        let mut sentencia = conn
+            .prepare(&sql)
+            .context("no se pudo preparar el resumen de emisoras")?;
+        let filas = sentencia
+            .query_map(parametros, emisora_resumen_desde_fila)
+            .context("no se pudo consultar el resumen de emisoras")?;
+        let encontrados: Vec<EmisoraResumen> = filas
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer los resúmenes de emisora")?;
+        let mut por_id: std::collections::HashMap<i64, EmisoraResumen> =
+            encontrados.into_iter().map(|e| (e.id, e)).collect();
+        for id in lote {
+            if let Some(emisora) = por_id.remove(id) {
+                resumenes.push(emisora);
+            }
+        }
+    }
+    Ok(resumenes)
+}
+
+pub fn emisora_resumen_desde_fila(fila: &rusqlite::Row<'_>) -> rusqlite::Result<EmisoraResumen> {
+    Ok(EmisoraResumen {
+        id: fila.get(0)?,
+        nombre: fila.get(1)?,
+        url: fila.get(2)?,
+        pais: fila.get(3)?,
+        codec: fila.get(4)?,
+        bitrate_kbps: fila.get(5)?,
+        logo_url: fila.get(6)?,
+        logo_ruta: fila.get(7)?,
+        favorita: fila.get::<_, i64>(8)? != 0,
+        ultima_reproduccion: fila.get(9)?,
+    })
+}
+
+pub fn existe_pista_por_artista_titulo(
+    conn: &Connection,
+    artista: &str,
+    titulo: &str,
+) -> Result<bool> {
+    let artista_norm = etiquetas::normalizar(artista);
+    let titulo_norm = etiquetas::normalizar(titulo);
+    if artista_norm.is_empty() || titulo_norm.is_empty() {
+        return Ok(false);
+    }
+    let existe: i64 = conn
+        .query_row(
+            "SELECT count(*)
+               FROM PISTAS p
+               JOIN ARTISTAS ar ON ar.id = p.artista_id
+              WHERE ar.nombre_norm = ?1 AND p.titulo_norm = ?2",
+            params![artista_norm, titulo_norm],
+            |fila| fila.get(0),
+        )
+        .context("no se pudo comprobar el título en la biblioteca")?;
+    Ok(existe > 0)
+}
+
 pub fn contar_pistas(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT count(*) FROM PISTAS", [], |f| f.get(0))
         .context("no se pudieron contar las pistas")
@@ -303,6 +376,20 @@ pub mod ajustes {
             "reescaneo_completo_pendiente",
             if pendiente { "1" } else { "0" },
         )
+    }
+
+    /// Siembra claves que aún no existan; los valores dependientes de la
+    /// configuración se fijan por código, nunca como constantes SQL.
+    pub fn sembrar(conn: &Connection, pares: &[(&str, &str)]) -> Result<()> {
+        for (clave, valor) in pares {
+            conn.execute(
+                "INSERT INTO AJUSTES (clave, valor) VALUES (?1, ?2)
+                 ON CONFLICT(clave) DO NOTHING",
+                params![clave, valor],
+            )
+            .with_context(|| format!("no se pudo sembrar el ajuste {clave}"))?;
+        }
+        Ok(())
     }
 }
 
@@ -1247,6 +1334,23 @@ pub mod historial {
         .context("no se pudo registrar el inicio de reproducción")
     }
 
+    /// Registra el título ICY de una emisora como escucha potencial (sin
+    /// completar); devuelve el id y la marca de tiempo.
+    pub fn registrar_icy(
+        conn: &Connection,
+        emisora_id: i64,
+        titulo_icy: &str,
+    ) -> Result<(i64, String)> {
+        let visto_en = bd::ahora_iso();
+        conn.query_row(
+            "INSERT INTO HISTORIAL_REPRODUCCION (emisora_id, titulo_icy, reproducido_en, completada)
+             VALUES (?1, ?2, ?3, 0) RETURNING id",
+            params![emisora_id, titulo_icy, visto_en],
+            |fila| Ok((fila.get(0)?, visto_en.clone())),
+        )
+        .context("no se pudo registrar el título de radio")
+    }
+
     pub fn marcar_completada(conn: &Connection, historial_id: i64) -> Result<()> {
         conn.execute(
             "UPDATE HISTORIAL_REPRODUCCION SET completada = 1 WHERE id = ?1",
@@ -1254,6 +1358,18 @@ pub mod historial {
         )
         .context("no se pudo marcar el historial como completado")?;
         Ok(())
+    }
+
+    /// Devuelve `(emisora_id, titulo_icy, reproducido_en)` de una fila de radio.
+    pub fn leer_icy(conn: &Connection, historial_id: i64) -> Result<Option<(i64, String, String)>> {
+        conn.query_row(
+            "SELECT emisora_id, titulo_icy, reproducido_en FROM HISTORIAL_REPRODUCCION
+              WHERE id = ?1 AND emisora_id IS NOT NULL AND titulo_icy IS NOT NULL",
+            [historial_id],
+            |fila| Ok((fila.get(0)?, fila.get(1)?, fila.get(2)?)),
+        )
+        .optional()
+        .context("no se pudo leer el título de radio del historial")
     }
 }
 
@@ -1326,32 +1442,66 @@ pub mod favoritas {
 pub mod envios {
     use super::*;
 
+    /// Origen de un envío: exactamente uno de pista o emisora.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OrigenEnvio {
+        Pista(i64),
+        Emisora(i64),
+    }
+
+    impl OrigenEnvio {
+        pub fn pista_id(self) -> Option<i64> {
+            match self {
+                OrigenEnvio::Pista(id) => Some(id),
+                OrigenEnvio::Emisora(_) => None,
+            }
+        }
+
+        pub fn emisora_id(self) -> Option<i64> {
+            match self {
+                OrigenEnvio::Pista(_) => None,
+                OrigenEnvio::Emisora(id) => Some(id),
+            }
+        }
+    }
+
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct EnvioPendiente {
         pub id: i64,
         pub tipo: String,
-        pub pista_id: i64,
+        pub origen: OrigenEnvio,
         pub historial_id: Option<i64>,
         pub reproducido_en: Option<String>,
         pub intentos: i64,
+        /// Título a scrobblear: el de la pista o el `titulo_icy` en crudo.
         pub titulo: String,
+        /// Artista de la pista; vacío en los envíos de radio (se parsea del ICY).
         pub artista: String,
+        /// Álbum de la pista o nombre de la emisora.
         pub album: String,
-        pub duracion_ms: i64,
+        pub duracion_ms: Option<i64>,
+    }
+
+    impl EnvioPendiente {
+        pub fn es_radio(&self) -> bool {
+            matches!(self.origen, OrigenEnvio::Emisora(_))
+        }
     }
 
     pub fn encolar(
         conn: &Connection,
         servicio: &str,
         tipo: &str,
-        pista_id: i64,
+        origen: OrigenEnvio,
         historial_id: Option<i64>,
         reproducido_en: Option<&str>,
     ) -> Result<i64> {
         let tx = conn
             .unchecked_transaction()
             .context("no se pudo iniciar la transacción del envío")?;
-        if tipo != "scrobble" {
+        if tipo != "scrobble"
+            && let Some(pista_id) = origen.pista_id()
+        {
             tx.execute(
                 "UPDATE ENVIOS
                     SET estado = 'descartado', error_msg = 'reemplazado por un cambio posterior'
@@ -1366,14 +1516,15 @@ pub mod envios {
         let id = tx
             .query_row(
                 "INSERT INTO ENVIOS
-                    (servicio, tipo, pista_id, historial_id, reproducido_en, estado,
+                    (servicio, tipo, pista_id, emisora_id, historial_id, reproducido_en, estado,
                      intentos, proximo_intento_en, creado_en)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pendiente', 0, ?6, ?6)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pendiente', 0, ?7, ?7)
                  RETURNING id",
                 params![
                     servicio,
                     tipo,
-                    pista_id,
+                    origen.pista_id(),
+                    origen.emisora_id(),
                     historial_id,
                     reproducido_en,
                     ahora
@@ -1392,35 +1543,70 @@ pub mod envios {
     ) -> Result<Vec<EnvioPendiente>> {
         let mut sentencia = conn
             .prepare(
-                "SELECT e.id, e.tipo, e.pista_id, e.historial_id, e.reproducido_en, e.intentos,
-                        p.titulo, ar.nombre, al.titulo, p.duracion_ms
+                "SELECT e.id, e.tipo, e.pista_id, e.emisora_id, e.historial_id,
+                        e.reproducido_en, e.intentos,
+                        p.titulo, ar.nombre, al.titulo, p.duracion_ms,
+                        h.titulo_icy, em.nombre
                    FROM ENVIOS e
-                   JOIN PISTAS p ON p.id = e.pista_id
-                   JOIN ARTISTAS ar ON ar.id = p.artista_id
-                   JOIN ALBUMES al ON al.id = p.album_id
+                   LEFT JOIN PISTAS p ON p.id = e.pista_id
+                   LEFT JOIN ARTISTAS ar ON ar.id = p.artista_id
+                   LEFT JOIN ALBUMES al ON al.id = p.album_id
+                   LEFT JOIN HISTORIAL_REPRODUCCION h ON h.id = e.historial_id
+                   LEFT JOIN EMISORAS em ON em.id = e.emisora_id
                   WHERE e.servicio = ?1
                     AND e.estado IN ('pendiente', 'error')
                     AND e.proximo_intento_en <= ?2
+                    AND ((e.pista_id IS NOT NULL AND e.emisora_id IS NULL)
+                         OR (e.emisora_id IS NOT NULL AND e.pista_id IS NULL))
                   ORDER BY e.reproducido_en IS NULL, e.reproducido_en, e.id
                   LIMIT ?3",
             )
             .context("no se pudieron preparar los envíos pendientes")?;
-        sentencia
+        let filas = sentencia
             .query_map(params![servicio, bd::ahora_iso(), limite as i64], |fila| {
+                let pista_id: Option<i64> = fila.get(2)?;
+                let emisora_id: Option<i64> = fila.get(3)?;
+                let (origen, titulo, artista, album, duracion_ms) = match (pista_id, emisora_id) {
+                    (Some(pista_id), None) => (
+                        OrigenEnvio::Pista(pista_id),
+                        fila.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                        fila.get::<_, Option<String>>(8)?.unwrap_or_default(),
+                        fila.get::<_, Option<String>>(9)?.unwrap_or_default(),
+                        fila.get(10)?,
+                    ),
+                    (None, Some(emisora_id)) => (
+                        OrigenEnvio::Emisora(emisora_id),
+                        fila.get::<_, Option<String>>(11)?.unwrap_or_default(),
+                        String::new(),
+                        fila.get::<_, Option<String>>(12)?.unwrap_or_default(),
+                        None,
+                    ),
+                    _ => {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Null,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "envío sin origen único",
+                            )),
+                        ));
+                    }
+                };
                 Ok(EnvioPendiente {
                     id: fila.get(0)?,
                     tipo: fila.get(1)?,
-                    pista_id: fila.get(2)?,
-                    historial_id: fila.get(3)?,
-                    reproducido_en: fila.get(4)?,
-                    intentos: fila.get(5)?,
-                    titulo: fila.get(6)?,
-                    artista: fila.get(7)?,
-                    album: fila.get(8)?,
-                    duracion_ms: fila.get(9)?,
+                    origen,
+                    historial_id: fila.get(4)?,
+                    reproducido_en: fila.get(5)?,
+                    intentos: fila.get(6)?,
+                    titulo,
+                    artista,
+                    album,
+                    duracion_ms,
                 })
             })
-            .context("no se pudieron listar los envíos pendientes")?
+            .context("no se pudieron listar los envíos pendientes")?;
+        filas
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("no se pudieron leer los envíos pendientes")
     }
@@ -1515,39 +1701,67 @@ pub mod envios {
 pub mod cola {
     use super::*;
 
-    pub type ColaPersistida = (Vec<(PistaResumen, u32)>, Option<usize>);
+    pub type ColaPersistida = (Vec<(ElementoCola, u32)>, Option<usize>);
 
     pub fn cargar(conn: &Connection) -> Result<ColaPersistida> {
         let mut sentencia = conn
             .prepare(
-                "SELECT c.pista_id, c.posicion, c.posicion_orig, p.titulo, ar.nombre,
-                        al.titulo, al.id, p.duracion_ms, al.caratula_ruta, p.ruta
+                "SELECT c.tipo, c.pista_id, c.emisora_id, c.posicion_orig,
+                        p.titulo, ar.nombre, al.titulo, al.id, p.duracion_ms, al.caratula_ruta,
+                        p.ruta,
+                        e.nombre, e.url, e.pais, e.codec, e.bitrate_kbps, e.logo_url,
+                        e.logo_ruta, e.favorita, e.ultima_reproduccion
                    FROM COLA c
-                   JOIN PISTAS p ON p.id = c.pista_id
-                   JOIN ARTISTAS ar ON ar.id = p.artista_id
-                   JOIN ALBUMES al ON al.id = p.album_id
+                   LEFT JOIN PISTAS p ON p.id = c.pista_id
+                   LEFT JOIN ARTISTAS ar ON ar.id = p.artista_id
+                   LEFT JOIN ALBUMES al ON al.id = p.album_id
+                   LEFT JOIN EMISORAS e ON e.id = c.emisora_id
                   ORDER BY c.posicion",
             )
             .context("no se pudo preparar la lectura de la cola")?;
         let filas = sentencia
             .query_map([], |fila| {
-                let posicion_orig: i64 = fila.get(2)?;
-                Ok((
-                    PistaResumen {
-                        id: fila.get(0)?,
-                        titulo: fila.get(3)?,
-                        artista: fila.get(4)?,
-                        album: fila.get(5)?,
-                        album_id: fila.get(6)?,
-                        duracion_ms: fila.get(7)?,
-                        caratula_ruta: fila.get(8)?,
-                        ruta: fila.get(9)?,
-                    },
-                    posicion_orig.max(0) as u32,
-                ))
+                let posicion_orig: i64 = fila.get(3)?;
+                let pista_id: Option<i64> = fila.get(1)?;
+                let emisora_id: Option<i64> = fila.get(2)?;
+                let elemento = match (pista_id, emisora_id) {
+                    (Some(_), None) => ElementoCola::Pista(PistaResumen {
+                        id: fila.get(1)?,
+                        titulo: fila.get(4)?,
+                        artista: fila.get(5)?,
+                        album: fila.get(6)?,
+                        album_id: fila.get(7)?,
+                        duracion_ms: fila.get(8)?,
+                        caratula_ruta: fila.get(9)?,
+                        ruta: fila.get(10)?,
+                    }),
+                    (None, Some(_)) => ElementoCola::Emisora(EmisoraResumen {
+                        id: fila.get(2)?,
+                        nombre: fila.get(11)?,
+                        url: fila.get(12)?,
+                        pais: fila.get(13)?,
+                        codec: fila.get(14)?,
+                        bitrate_kbps: fila.get(15)?,
+                        logo_url: fila.get(16)?,
+                        logo_ruta: fila.get(17)?,
+                        favorita: fila.get::<_, i64>(18)? != 0,
+                        ultima_reproduccion: fila.get(19)?,
+                    }),
+                    _ => {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Null,
+                            Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "elemento de cola sin origen único",
+                            )),
+                        ));
+                    }
+                };
+                Ok((elemento, posicion_orig.max(0) as u32))
             })
             .context("no se pudo leer la cola")?;
-        let items: Vec<(PistaResumen, u32)> = filas
+        let items: Vec<(ElementoCola, u32)> = filas
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("no se pudieron leer los elementos de la cola")?;
         if items.is_empty() {
@@ -1560,16 +1774,27 @@ pub mod cola {
         Ok((items, indice))
     }
 
-    pub fn guardar(conn: &Connection, items: &[(i64, u32)], indice: Option<usize>) -> Result<()> {
+    pub fn guardar(
+        conn: &Connection,
+        items: &[(ElementoCola, u32)],
+        indice: Option<usize>,
+    ) -> Result<()> {
         let tx = conn
             .unchecked_transaction()
             .context("no se pudo iniciar la transacción de la cola")?;
         tx.execute("DELETE FROM COLA", [])
             .context("no se pudo vaciar la cola persistida")?;
-        for (posicion, (pista_id, posicion_orig)) in items.iter().enumerate() {
+        for (posicion, (elemento, posicion_orig)) in items.iter().enumerate() {
             tx.execute(
-                "INSERT INTO COLA (pista_id, posicion, posicion_orig) VALUES (?1, ?2, ?3)",
-                params![pista_id, posicion as i64, *posicion_orig as i64],
+                "INSERT INTO COLA (tipo, pista_id, emisora_id, posicion, posicion_orig)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    elemento.tipo(),
+                    elemento.pista_id(),
+                    elemento.emisora_id(),
+                    posicion as i64,
+                    *posicion_orig as i64
+                ],
             )
             .context("no se pudo persistir un elemento de la cola")?;
         }
@@ -1587,6 +1812,399 @@ pub mod cola {
         tx.commit()
             .context("no se pudo confirmar la cola persistida")?;
         Ok(())
+    }
+}
+
+pub mod emisoras {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OrdenEmisoras {
+        Nombre,
+        UltimaReproduccion,
+    }
+
+    impl OrdenEmisoras {
+        pub const TODAS: [OrdenEmisoras; 2] =
+            [OrdenEmisoras::Nombre, OrdenEmisoras::UltimaReproduccion];
+
+        pub fn etiqueta(self) -> &'static str {
+            match self {
+                OrdenEmisoras::Nombre => "nombre",
+                OrdenEmisoras::UltimaReproduccion => "última reproducción",
+            }
+        }
+    }
+
+    /// Datos para dar de alta una emisora (alta manual, importación o directorio).
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
+    pub struct NuevaEmisora {
+        pub nombre: String,
+        pub url: String,
+        pub pagina_web: Option<String>,
+        pub pais: Option<String>,
+        pub etiquetas: Option<String>,
+        pub codec: Option<String>,
+        pub bitrate_kbps: Option<i64>,
+        pub logo_url: Option<String>,
+        pub radiobrowser_uuid: Option<String>,
+        pub favorita: bool,
+    }
+
+    const CAMPOS: &str = "id, nombre, nombre_norm, url, pagina_web, pais, etiquetas, codec,
+                          bitrate_kbps, logo_url, logo_ruta, radiobrowser_uuid, favorita,
+                          anadida_en, ultima_reproduccion, ultimo_error";
+
+    fn emisora_desde_fila(fila: &rusqlite::Row<'_>) -> rusqlite::Result<Emisora> {
+        Ok(Emisora {
+            id: fila.get(0)?,
+            nombre: fila.get(1)?,
+            nombre_norm: fila.get(2)?,
+            url: fila.get(3)?,
+            pagina_web: fila.get(4)?,
+            pais: fila.get(5)?,
+            etiquetas: fila.get(6)?,
+            codec: fila.get(7)?,
+            bitrate_kbps: fila.get(8)?,
+            logo_url: fila.get(9)?,
+            logo_ruta: fila.get(10)?,
+            radiobrowser_uuid: fila.get(11)?,
+            favorita: fila.get::<_, i64>(12)? != 0,
+            anadida_en: fila.get(13)?,
+            ultima_reproduccion: fila.get(14)?,
+            ultimo_error: fila.get(15)?,
+        })
+    }
+
+    pub fn listar(
+        conn: &Connection,
+        solo_favoritas: bool,
+        orden: OrdenEmisoras,
+        descendente: bool,
+    ) -> Result<Vec<EmisoraResumen>> {
+        let orden_sql = match (orden, descendente) {
+            (OrdenEmisoras::Nombre, false) => "nombre_norm ASC",
+            (OrdenEmisoras::Nombre, true) => "nombre_norm DESC",
+            (OrdenEmisoras::UltimaReproduccion, false) => {
+                "ultima_reproduccion IS NULL, ultima_reproduccion ASC, nombre_norm ASC"
+            }
+            (OrdenEmisoras::UltimaReproduccion, true) => {
+                "ultima_reproduccion IS NULL, ultima_reproduccion DESC, nombre_norm ASC"
+            }
+        };
+        let filtro = if solo_favoritas {
+            "WHERE favorita = 1"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT id, nombre, url, pais, codec, bitrate_kbps, logo_url, logo_ruta,
+                    favorita, ultima_reproduccion
+               FROM EMISORAS {filtro} ORDER BY {orden_sql}"
+        );
+        let mut sentencia = conn
+            .prepare(&sql)
+            .context("no se pudo preparar el listado de emisoras")?;
+        sentencia
+            .query_map([], emisora_resumen_desde_fila)
+            .context("no se pudieron listar las emisoras")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer las emisoras")
+    }
+
+    pub fn buscar_local(
+        conn: &Connection,
+        texto: &str,
+        solo_favoritas: bool,
+    ) -> Result<Vec<EmisoraResumen>> {
+        let patron = format!(
+            "%{}%",
+            etiquetas::normalizar(texto)
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        let filtro = if solo_favoritas {
+            "AND favorita = 1"
+        } else {
+            ""
+        };
+        let sql = format!(
+            "SELECT id, nombre, url, pais, codec, bitrate_kbps, logo_url, logo_ruta,
+                    favorita, ultima_reproduccion
+               FROM EMISORAS
+              WHERE nombre_norm LIKE ?1 ESCAPE '\\' {filtro}
+              ORDER BY nombre_norm"
+        );
+        let mut sentencia = conn
+            .prepare(&sql)
+            .context("no se pudo preparar la búsqueda local de emisoras")?;
+        sentencia
+            .query_map([patron], emisora_resumen_desde_fila)
+            .context("no se pudo buscar emisoras locales")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer las emisoras locales")
+    }
+
+    pub fn por_id(conn: &Connection, id: i64) -> Result<Option<Emisora>> {
+        conn.query_row(
+            &format!("SELECT {CAMPOS} FROM EMISORAS WHERE id = ?1"),
+            [id],
+            emisora_desde_fila,
+        )
+        .optional()
+        .context("no se pudo leer la emisora")
+    }
+
+    pub fn por_uuid(conn: &Connection, uuid: &str) -> Result<Option<Emisora>> {
+        conn.query_row(
+            &format!("SELECT {CAMPOS} FROM EMISORAS WHERE radiobrowser_uuid = ?1"),
+            [uuid],
+            emisora_desde_fila,
+        )
+        .optional()
+        .context("no se pudo leer la emisora por uuid")
+    }
+
+    pub fn por_url(conn: &Connection, url: &str) -> Result<Option<Emisora>> {
+        conn.query_row(
+            &format!("SELECT {CAMPOS} FROM EMISORAS WHERE url = ?1"),
+            [url],
+            emisora_desde_fila,
+        )
+        .optional()
+        .context("no se pudo leer la emisora por url")
+    }
+
+    pub fn crear(conn: &Connection, nueva: &NuevaEmisora) -> Result<i64> {
+        let nombre = nueva.nombre.trim();
+        let url = normalizar_url(&nueva.url);
+        conn.query_row(
+            "INSERT INTO EMISORAS
+                (nombre, nombre_norm, url, pagina_web, pais, etiquetas, codec, bitrate_kbps,
+                 logo_url, radiobrowser_uuid, favorita, anadida_en)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             RETURNING id",
+            params![
+                nombre,
+                etiquetas::normalizar(nombre),
+                url,
+                nueva.pagina_web,
+                nueva.pais,
+                nueva.etiquetas,
+                nueva.codec,
+                nueva.bitrate_kbps,
+                nueva.logo_url,
+                nueva.radiobrowser_uuid,
+                i64::from(nueva.favorita),
+                bd::ahora_iso()
+            ],
+            |fila| fila.get(0),
+        )
+        .context("no se pudo crear la emisora")
+    }
+
+    pub fn editar(
+        conn: &Connection,
+        id: i64,
+        nombre: &str,
+        url: &str,
+        pagina_web: Option<&str>,
+    ) -> Result<()> {
+        let nombre = nombre.trim();
+        conn.execute(
+            "UPDATE EMISORAS
+                SET nombre = ?1, nombre_norm = ?2, url = ?3, pagina_web = ?4
+              WHERE id = ?5",
+            params![
+                nombre,
+                etiquetas::normalizar(nombre),
+                normalizar_url(url),
+                pagina_web,
+                id
+            ],
+        )
+        .context("no se pudo editar la emisora")?;
+        Ok(())
+    }
+
+    pub fn eliminar(conn: &Connection, id: i64) -> Result<()> {
+        conn.execute("DELETE FROM EMISORAS WHERE id = ?1", [id])
+            .context("no se pudo eliminar la emisora")?;
+        Ok(())
+    }
+
+    pub fn alternar_favorita(conn: &Connection, id: i64) -> Result<bool> {
+        let favorita: Option<i64> = conn
+            .query_row(
+                "SELECT favorita FROM EMISORAS WHERE id = ?1",
+                [id],
+                |fila| fila.get(0),
+            )
+            .optional()
+            .context("no se pudo leer la favorita de la emisora")?;
+        let nuevo = match favorita {
+            Some(1) => 0,
+            Some(_) => 1,
+            None => return Ok(false),
+        };
+        conn.execute(
+            "UPDATE EMISORAS SET favorita = ?1 WHERE id = ?2",
+            params![nuevo, id],
+        )
+        .context("no se pudo cambiar la favorita de la emisora")?;
+        Ok(nuevo == 1)
+    }
+
+    pub fn marcar_reproducida(conn: &Connection, id: i64) -> Result<()> {
+        conn.execute(
+            "UPDATE EMISORAS SET ultima_reproduccion = ?1, ultimo_error = NULL WHERE id = ?2",
+            params![bd::ahora_iso(), id],
+        )
+        .context("no se pudo marcar la emisora como reproducida")?;
+        Ok(())
+    }
+
+    pub fn fijar_codec(
+        conn: &Connection,
+        id: i64,
+        codec: Option<&str>,
+        bitrate_kbps: Option<i64>,
+    ) -> Result<()> {
+        conn.execute(
+            "UPDATE EMISORAS
+                SET codec = COALESCE(codec, ?1), bitrate_kbps = COALESCE(bitrate_kbps, ?2)
+              WHERE id = ?3",
+            params![codec, bitrate_kbps, id],
+        )
+        .context("no se pudo fijar el codec de la emisora")?;
+        Ok(())
+    }
+
+    pub fn fijar_logo(conn: &Connection, id: i64, logo_ruta: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE EMISORAS SET logo_ruta = ?1 WHERE id = ?2",
+            params![logo_ruta, id],
+        )
+        .context("no se pudo fijar el logo de la emisora")?;
+        Ok(())
+    }
+
+    pub fn marcar_error(conn: &Connection, id: i64, mensaje: &str) -> Result<()> {
+        conn.execute(
+            "UPDATE EMISORAS SET ultimo_error = ?1 WHERE id = ?2",
+            params![mensaje, id],
+        )
+        .context("no se pudo guardar el error de la emisora")?;
+        Ok(())
+    }
+
+    pub fn normalizar_url(url: &str) -> String {
+        url.trim().trim_end_matches('/').to_string()
+    }
+}
+
+pub mod titulos_emisora {
+    use super::*;
+
+    const MAX_TITULOS: usize = 50;
+
+    /// Inserta el título si no repite el último visto y poda la emisora a los
+    /// 50 más recientes.
+    pub fn insertar_y_podar(conn: &Connection, emisora_id: i64, titulo: &str) -> Result<()> {
+        let ultimo: Option<String> = conn
+            .query_row(
+                "SELECT titulo FROM EMISORA_TITULOS
+                  WHERE emisora_id = ?1 ORDER BY visto_en DESC, id DESC LIMIT 1",
+                [emisora_id],
+                |fila| fila.get(0),
+            )
+            .optional()
+            .context("no se pudo leer el último título de la emisora")?;
+        if ultimo.as_deref() == Some(titulo) {
+            return Ok(());
+        }
+        let tx = conn
+            .unchecked_transaction()
+            .context("no se pudo iniciar la transacción de títulos")?;
+        tx.execute(
+            "INSERT INTO EMISORA_TITULOS (emisora_id, titulo, visto_en) VALUES (?1, ?2, ?3)",
+            params![emisora_id, titulo, bd::ahora_iso()],
+        )
+        .context("no se pudo insertar el título de la emisora")?;
+        tx.execute(
+            "DELETE FROM EMISORA_TITULOS
+              WHERE emisora_id = ?1
+                AND id NOT IN (
+                    SELECT id FROM EMISORA_TITULOS
+                     WHERE emisora_id = ?1
+                     ORDER BY visto_en DESC, id DESC LIMIT ?2)",
+            params![emisora_id, MAX_TITULOS as i64],
+        )
+        .context("no se pudieron podar los títulos de la emisora")?;
+        tx.commit()
+            .context("no se pudo confirmar los títulos de la emisora")?;
+        Ok(())
+    }
+
+    pub fn listar(conn: &Connection, emisora_id: i64, limite: usize) -> Result<Vec<TituloEmisora>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT id, emisora_id, titulo, visto_en
+                   FROM EMISORA_TITULOS
+                  WHERE emisora_id = ?1
+                  ORDER BY visto_en DESC, id DESC
+                  LIMIT ?2",
+            )
+            .context("no se pudo preparar el listado de títulos")?;
+        sentencia
+            .query_map(params![emisora_id, limite as i64], |fila| {
+                Ok(TituloEmisora {
+                    id: fila.get(0)?,
+                    emisora_id: fila.get(1)?,
+                    titulo: fila.get(2)?,
+                    visto_en: fila.get(3)?,
+                })
+            })
+            .context("no se pudieron listar los títulos de la emisora")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer los títulos de la emisora")
+    }
+}
+
+pub mod busquedas_radio {
+    use super::*;
+
+    pub fn leer(conn: &Connection, clave: &str) -> Result<Option<(String, String)>> {
+        conn.query_row(
+            "SELECT respuesta_json, obtenido_en FROM BUSQUEDAS_RADIO WHERE clave = ?1",
+            [clave],
+            |fila| Ok((fila.get(0)?, fila.get(1)?)),
+        )
+        .optional()
+        .context("no se pudo leer la búsqueda de radio cacheada")
+    }
+
+    pub fn guardar(conn: &Connection, clave: &str, respuesta_json: &str) -> Result<()> {
+        conn.execute(
+            "INSERT INTO BUSQUEDAS_RADIO (clave, respuesta_json, obtenido_en)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(clave) DO UPDATE
+                SET respuesta_json = excluded.respuesta_json,
+                    obtenido_en = excluded.obtenido_en",
+            params![clave, respuesta_json, bd::ahora_iso()],
+        )
+        .context("no se pudo guardar la búsqueda de radio")?;
+        Ok(())
+    }
+
+    pub fn podar(conn: &Connection, dias: i64) -> Result<usize> {
+        let limite = bd::iso_en(-dias * 86_400);
+        conn.execute(
+            "DELETE FROM BUSQUEDAS_RADIO WHERE obtenido_en < ?1",
+            [limite],
+        )
+        .context("no se pudo podar la caché de búsquedas de radio")
     }
 }
 

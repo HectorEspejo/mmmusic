@@ -23,13 +23,10 @@ use crate::biblioteca::{bd, consultas};
 use crate::config::ConfigScrobbling;
 use crate::credenciales::{self, Credenciales};
 use crate::eventos::{AppEvento, NivelAviso};
+use crate::radio::icy;
 
 pub const SERVICIO_LISTENBRAINZ: &str = "listenbrainz";
 pub const SERVICIO_LASTFM: &str = "lastfm";
-pub const HOSTS_PERMITIDOS: [&str; 2] = [
-    "https://api.listenbrainz.org",
-    "https://ws.audioscrobbler.com",
-];
 pub const LOTE_MAXIMO: usize = 50;
 pub const MARCA_AUTH: &str = "auth:";
 pub const ERROR_AUTH_LISTENBRAINZ: &str =
@@ -39,29 +36,26 @@ pub const ERROR_AUTH_LASTFM: &str = "Last.fm: sesión no válida — ejecuta mmm
 const CICLO: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
-pub struct FalloHttp {
-    pub status: u16,
-    pub codigo_servicio: Option<i32>,
-    pub mensaje: String,
-}
-
-impl FalloHttp {
-    pub fn red(mensaje: impl Into<String>) -> Self {
-        Self {
-            status: 0,
-            codigo_servicio: None,
-            mensaje: mensaje.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 pub enum ComandoScrobbling {
     NowPlaying(PistaResumen),
     Completada {
         historial_id: i64,
         pista: PistaResumen,
         reproducido_en: String,
+    },
+    /// Título ICY reconocido con artista: now playing inmediato con el
+    /// nombre de la emisora como álbum.
+    TituloIcy {
+        emisora_id: i64,
+        emisora_nombre: String,
+        artista: String,
+        titulo: String,
+        historial_id: i64,
+        instante: String,
+    },
+    /// El mismo título lleva 30 s en directo: se encola el scrobble.
+    TituloIcyCompletado {
+        historial_id: i64,
     },
     Amar(i64),
     Desamar(i64),
@@ -216,8 +210,7 @@ impl Scrobbler {
         tx_estado: watch::Sender<EstadoScrobbling>,
         rx_cmd: Receiver<ComandoScrobbling>,
     ) -> Result<Self> {
-        let mut conn = bd::abrir(&ruta_bd)?;
-        bd::migrar(&mut conn)?;
+        let conn = bd::abrir_y_migrar(&ruta_bd)?;
         let mut estado = EstadoScrobbling::default();
         if let Some(texto) = consultas::ajustes::leer(&conn, "scrobbling_ultimo_error")?
             && !texto.trim().is_empty()
@@ -254,6 +247,15 @@ impl Scrobbler {
                 pista,
                 reproducido_en,
             } => self.completada(&pista, historial_id, &reproducido_en)?,
+            ComandoScrobbling::TituloIcy {
+                emisora_nombre,
+                artista,
+                titulo,
+                ..
+            } => self.now_playing_icy(&emisora_nombre, &artista, &titulo),
+            ComandoScrobbling::TituloIcyCompletado { historial_id } => {
+                self.completada_icy(historial_id)?
+            }
             ComandoScrobbling::Amar(pista_id) => self.encolar_favorita(pista_id, true)?,
             ComandoScrobbling::Desamar(pista_id) => self.encolar_favorita(pista_id, false)?,
         }
@@ -322,7 +324,7 @@ impl Scrobbler {
                 &self.conn,
                 SERVICIO_LISTENBRAINZ,
                 "scrobble",
-                pista.id,
+                consultas::envios::OrigenEnvio::Pista(pista.id),
                 Some(historial_id),
                 Some(reproducido_en),
             )?;
@@ -332,9 +334,81 @@ impl Scrobbler {
                 &self.conn,
                 SERVICIO_LASTFM,
                 "scrobble",
-                pista.id,
+                consultas::envios::OrigenEnvio::Pista(pista.id),
                 Some(historial_id),
                 Some(reproducido_en),
+            )?;
+        }
+        self.actualizar_pendientes()?;
+        Ok(())
+    }
+
+    fn now_playing_icy(&mut self, emisora_nombre: &str, artista: &str, titulo: &str) {
+        if !self.config.now_playing {
+            return;
+        }
+        if self.estado.listenbrainz.activo
+            && let Err(fallo) =
+                self.lb
+                    .enviar_ahora_escucha(escucha(artista, titulo, emisora_nombre, None, None))
+        {
+            let mensaje = self.credenciales.redactar(&fallo.mensaje);
+            warn!(
+                servicio = SERVICIO_LISTENBRAINZ,
+                "now playing de radio falló: {mensaje}"
+            );
+        }
+        if self.estado.lastfm.activo {
+            let cancion = Cancion {
+                artista,
+                titulo,
+                album: emisora_nombre,
+                duracion_ms: None,
+                unix: None,
+            };
+            if let Err(fallo) = self.lf.enviar_ahora(&cancion) {
+                let mensaje = self.credenciales.redactar(&fallo.mensaje);
+                warn!(
+                    servicio = SERVICIO_LASTFM,
+                    "now playing de radio falló: {mensaje}"
+                );
+            }
+        }
+    }
+
+    fn completada_icy(&mut self, historial_id: i64) -> Result<()> {
+        let Some((emisora_id, titulo_icy, reproducido_en)) =
+            consultas::historial::leer_icy(&self.conn, historial_id)?
+        else {
+            return Ok(());
+        };
+        let Some(emisora) = consultas::emisoras::por_id(&self.conn, emisora_id)? else {
+            return Ok(());
+        };
+        let Some(titulo) = icy::parsear(&titulo_icy, &emisora.nombre) else {
+            return Ok(());
+        };
+        if titulo.artista.is_none() {
+            return Ok(());
+        }
+        if self.estado.listenbrainz.activo {
+            consultas::envios::encolar(
+                &self.conn,
+                SERVICIO_LISTENBRAINZ,
+                "scrobble",
+                consultas::envios::OrigenEnvio::Emisora(emisora_id),
+                Some(historial_id),
+                Some(&reproducido_en),
+            )?;
+        }
+        if self.estado.lastfm.activo {
+            consultas::envios::encolar(
+                &self.conn,
+                SERVICIO_LASTFM,
+                "scrobble",
+                consultas::envios::OrigenEnvio::Emisora(emisora_id),
+                Some(historial_id),
+                Some(&reproducido_en),
             )?;
         }
         self.actualizar_pendientes()?;
@@ -349,7 +423,7 @@ impl Scrobbler {
             &self.conn,
             SERVICIO_LASTFM,
             if amar { "love" } else { "unlove" },
-            pista_id,
+            consultas::envios::OrigenEnvio::Pista(pista_id),
             None,
             None,
         )?;
@@ -377,7 +451,11 @@ impl Scrobbler {
             .iter()
             .partition(|envio| envio.tipo != "scrobble");
         for envio in favoritas {
-            let cancion = cancion_de_envio(envio, None);
+            let Some(preparada) = preparar_cancion(envio, None) else {
+                consultas::envios::descartar(&self.conn, envio.id, "envío de favorito inválido")?;
+                continue;
+            };
+            let cancion = preparada.cancion();
             let resultado = if envio.tipo == "love" {
                 self.lf.amar(&cancion)
             } else {
@@ -416,7 +494,7 @@ impl Scrobbler {
         }
 
         let ahora = bd::ahora_unix();
-        let mut canciones = Vec::with_capacity(scrobbles.len());
+        let mut preparadas: Vec<CancionPreparada> = Vec::with_capacity(scrobbles.len());
         let mut validos = Vec::with_capacity(scrobbles.len());
         for envio in &scrobbles {
             let Some(unix) = envio.reproducido_en.as_deref().and_then(bd::unix_desde_iso) else {
@@ -435,12 +513,25 @@ impl Scrobbler {
                 consultas::envios::descartar(&self.conn, envio.id, "timestamp futuro")?;
                 continue;
             }
-            canciones.push(cancion_de_envio(envio, Some(unix)));
-            validos.push((*envio).clone());
+            match preparar_cancion(envio, Some(unix)) {
+                Some(preparada) => {
+                    preparadas.push(preparada);
+                    validos.push((*envio).clone());
+                }
+                None => {
+                    consultas::envios::descartar(
+                        &self.conn,
+                        envio.id,
+                        "título de radio sin artista",
+                    )?;
+                }
+            }
         }
-        if canciones.is_empty() {
+        if preparadas.is_empty() {
             return Ok(());
         }
+        let canciones: Vec<Cancion<'_>> =
+            preparadas.iter().map(CancionPreparada::cancion).collect();
         match self.lf.enviar_scrobbles(&canciones) {
             Ok(resultado) => {
                 let ignorados: std::collections::HashMap<usize, &String> = resultado
@@ -502,11 +593,15 @@ impl Scrobbler {
                 consultas::envios::descartar(&self.conn, envio.id, "marca de tiempo inválida")?;
                 continue;
             };
+            let Some(preparada) = preparar_cancion(envio, Some(unix)) else {
+                consultas::envios::descartar(&self.conn, envio.id, "título de radio sin artista")?;
+                continue;
+            };
             escuchas.push(escucha(
-                &envio.artista,
-                &envio.titulo,
-                &envio.album,
-                envio.duracion_ms,
+                &preparada.artista,
+                &preparada.titulo,
+                &preparada.album,
+                preparada.duracion_ms,
                 Some(unix),
             ));
             validos.push(envio.clone());
@@ -559,11 +654,15 @@ impl Scrobbler {
             let Some(unix) = envio.reproducido_en.as_deref().and_then(bd::unix_desde_iso) else {
                 continue;
             };
+            let Some(preparada) = preparar_cancion(envio, Some(unix)) else {
+                consultas::envios::descartar(&self.conn, envio.id, "título de radio sin artista")?;
+                continue;
+            };
             let escucha = escucha(
-                &envio.artista,
-                &envio.titulo,
-                &envio.album,
-                envio.duracion_ms,
+                &preparada.artista,
+                &preparada.titulo,
+                &preparada.album,
+                preparada.duracion_ms,
                 Some(unix),
             );
             match self.lb.enviar_lote(vec![escucha]) {
@@ -712,112 +811,59 @@ impl Scrobbler {
     }
 }
 
-pub fn agente_http() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(10)))
-        .http_status_as_error(false)
-        .user_agent(concat!("mmmusic/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .into()
-}
-
-pub fn url_permitida(url: &str) -> bool {
-    HOSTS_PERMITIDOS
-        .iter()
-        .any(|host| url.starts_with(&format!("{host}/")))
-}
-
 fn cancion_de(pista: &PistaResumen, unix: Option<i64>) -> Cancion<'_> {
     Cancion {
         artista: &pista.artista,
         titulo: &pista.titulo,
         album: &pista.album,
-        duracion_ms: pista.duracion_ms,
+        duracion_ms: Some(pista.duracion_ms),
         unix,
     }
 }
 
-fn cancion_de_envio(envio: &consultas::envios::EnvioPendiente, unix: Option<i64>) -> Cancion<'_> {
-    Cancion {
-        artista: &envio.artista,
-        titulo: &envio.titulo,
-        album: &envio.album,
-        duracion_ms: envio.duracion_ms,
-        unix,
-    }
+/// Canción preparada para un envío; en radio el artista y el título salen del
+/// `titulo_icy` (si no hay artista, no se scrobblea).
+struct CancionPreparada {
+    artista: String,
+    titulo: String,
+    album: String,
+    duracion_ms: Option<i64>,
+    unix: Option<i64>,
 }
 
-pub(crate) fn interpretar(
-    respuesta: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-) -> Result<String, FalloHttp> {
-    match respuesta {
-        Ok(mut respuesta) => {
-            let status = respuesta.status().as_u16();
-            let cuerpo = respuesta.body_mut().read_to_string().unwrap_or_default();
-            if (200..300).contains(&status) {
-                return Ok(cuerpo);
-            }
-            Err(fallo_desde_cuerpo(status, &cuerpo))
+impl CancionPreparada {
+    fn cancion(&self) -> Cancion<'_> {
+        Cancion {
+            artista: &self.artista,
+            titulo: &self.titulo,
+            album: &self.album,
+            duracion_ms: self.duracion_ms,
+            unix: self.unix,
         }
-        Err(error) => Err(FalloHttp::red(error.to_string())),
     }
 }
 
-fn fallo_desde_cuerpo(status: u16, cuerpo: &str) -> FalloHttp {
-    let valor: Option<serde_json::Value> = serde_json::from_str(cuerpo).ok();
-    let codigo_servicio = valor.as_ref().and_then(|valor| {
-        valor
-            .get("error")
-            .and_then(serde_json::Value::as_i64)
-            .or_else(|| valor.get("code").and_then(serde_json::Value::as_i64))
-            .map(|codigo| codigo as i32)
-    });
-    let mensaje = valor
-        .as_ref()
-        .and_then(|valor| {
-            valor
-                .get("message")
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| valor.get("error").and_then(serde_json::Value::as_str))
+fn preparar_cancion(
+    envio: &consultas::envios::EnvioPendiente,
+    unix: Option<i64>,
+) -> Option<CancionPreparada> {
+    if envio.es_radio() {
+        let parsed = icy::parsear(&envio.titulo, &envio.album)?;
+        let artista = parsed.artista?;
+        Some(CancionPreparada {
+            artista,
+            titulo: parsed.titulo,
+            album: envio.album.clone(),
+            duracion_ms: None,
+            unix,
         })
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("HTTP {status}"));
-    FalloHttp {
-        status,
-        codigo_servicio,
-        mensaje,
-    }
-}
-
-#[cfg(test)]
-mod pruebas {
-    use super::*;
-
-    #[test]
-    fn solo_permite_los_hosts_declarados() {
-        assert!(url_permitida(
-            "https://api.listenbrainz.org/1/submit-listens"
-        ));
-        assert!(url_permitida("https://ws.audioscrobbler.com/2.0/"));
-        assert!(!url_permitida("https://example.com/robo"));
-        assert!(!url_permitida(
-            "http://api.listenbrainz.org/1/submit-listens"
-        ));
-        assert!(!url_permitida("https://api.listenbrainz.org.evil.com/x"));
-    }
-
-    #[test]
-    fn extrae_error_de_lastfm_y_listenbrainz() {
-        let lastfm = fallo_desde_cuerpo(400, r#"{"error":4,"message":"Invalid auth token"}"#);
-        assert_eq!(lastfm.codigo_servicio, Some(4));
-        assert_eq!(lastfm.mensaje, "Invalid auth token");
-
-        let lb = fallo_desde_cuerpo(400, r#"{"code":400,"error":"Bad payload"}"#);
-        assert_eq!(lb.codigo_servicio, Some(400));
-        assert_eq!(lb.mensaje, "Bad payload");
-
-        let sinesquema = fallo_desde_cuerpo(500, "vaya");
-        assert_eq!(sinesquema.codigo_servicio, None);
-        assert_eq!(sinesquema.mensaje, "HTTP 500");
+    } else {
+        Some(CancionPreparada {
+            artista: envio.artista.clone(),
+            titulo: envio.titulo.clone(),
+            album: envio.album.clone(),
+            duracion_ms: envio.duracion_ms,
+            unix,
+        })
     }
 }

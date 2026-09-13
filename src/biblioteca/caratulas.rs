@@ -235,8 +235,7 @@ pub fn lanzar_colores_pendientes(ruta_bd: PathBuf, tx: Sender<AppEvento>) -> Res
         .name("colores".to_string())
         .spawn(move || {
             let resultado = (|| -> Result<usize> {
-                let mut conn = bd::abrir(&ruta_bd)?;
-                bd::migrar(&mut conn)?;
+                let conn = bd::abrir_y_migrar(&ruta_bd)?;
                 procesar_colores_pendientes(&conn, Some(&bandera))
             })();
             match resultado {

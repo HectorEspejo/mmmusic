@@ -44,6 +44,7 @@ pub fn ejecutar_reescanear(completo: bool) -> Result<u8> {
     let rutas = Rutas::detectar()?;
     rutas.crear_directorios()?;
     let carga = Config::cargar(&rutas.config)?;
+    bd::limpiar_copia_previa_si_migrada(&rutas.base_datos)?;
     let raices = carga.config.carpetas_expandidas();
     let modo = if completo {
         ModoEscaneo::Completo
@@ -103,8 +104,8 @@ pub fn ejecutar_probar_servicios() -> Result<u8> {
         );
     }
     let cred = carga.credenciales;
-    let mut conn = bd::abrir(&rutas.base_datos)?;
-    bd::migrar(&mut conn)?;
+    bd::limpiar_copia_previa_si_migrada(&rutas.base_datos)?;
+    let conn = bd::abrir_y_migrar(&rutas.base_datos)?;
 
     let mut configurados = 0usize;
     let mut error_red = false;
@@ -187,7 +188,7 @@ pub fn ejecutar_autorizar_lastfm() -> Result<u8> {
         );
         return Ok(1);
     };
-    let agente = crate::scrobbling::agente_http();
+    let agente = crate::red::cliente::agente_http();
     let token = match lastfm::obtener_token(&agente, &api_key, &api_secret) {
         Ok(token) => token,
         Err(fallo) => {

@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-use super::{FalloHttp, interpretar};
 use crate::biblioteca::modelos::PistaResumen;
+use crate::red::cliente::{FalloHttp, agente_http, interpretar, url_permitida};
 
 pub const HOST: &str = "https://api.listenbrainz.org";
 pub const RUTA_ENVIO: &str = "/1/submit-listens";
@@ -26,7 +26,8 @@ pub struct MetadatosPista {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InfoAdicional {
-    pub duration_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
     pub media_player: &'static str,
     pub submission_client: &'static str,
 }
@@ -41,7 +42,7 @@ pub fn escucha(
     artista: &str,
     titulo: &str,
     album: &str,
-    duracion_ms: i64,
+    duracion_ms: Option<i64>,
     listened_at: Option<i64>,
 ) -> Escucha {
     Escucha {
@@ -64,13 +65,17 @@ pub fn escucha_de(pista: &PistaResumen, listened_at: Option<i64>) -> Escucha {
         &pista.artista,
         &pista.titulo,
         &pista.album,
-        pista.duracion_ms,
+        Some(pista.duracion_ms),
         listened_at,
     )
 }
 
 pub fn cuerpo_playing_now(pista: &PistaResumen) -> Result<String, serde_json::Error> {
-    cuerpo("playing_now", vec![escucha_de(pista, None)])
+    cuerpo_playing_now_escucha(escucha_de(pista, None))
+}
+
+pub fn cuerpo_playing_now_escucha(escucha: Escucha) -> Result<String, serde_json::Error> {
+    cuerpo("playing_now", vec![escucha])
 }
 
 pub fn cuerpo_import(escuchas: Vec<Escucha>) -> Result<String, serde_json::Error> {
@@ -92,7 +97,7 @@ pub struct ClienteListenBrainz {
 impl ClienteListenBrainz {
     pub fn nuevo(token: Option<String>) -> Self {
         Self {
-            agente: super::agente_http(),
+            agente: agente_http(),
             token,
         }
     }
@@ -114,6 +119,15 @@ impl ClienteListenBrainz {
         self.post(RUTA_ENVIO, token, &cuerpo).map(|_| ())
     }
 
+    pub fn enviar_ahora_escucha(&self, escucha: Escucha) -> Result<(), FalloHttp> {
+        let Some(token) = self.token.as_deref() else {
+            return Err(FalloHttp::red("ListenBrainz sin token"));
+        };
+        let cuerpo = cuerpo_playing_now_escucha(escucha)
+            .map_err(|error| FalloHttp::red(format!("JSON inválido: {error}")))?;
+        self.post(RUTA_ENVIO, token, &cuerpo).map(|_| ())
+    }
+
     pub fn enviar_lote(&self, escuchas: Vec<Escucha>) -> Result<(), FalloHttp> {
         let Some(token) = self.token.as_deref() else {
             return Err(FalloHttp::red("ListenBrainz sin token"));
@@ -128,7 +142,7 @@ impl ClienteListenBrainz {
             return Err(FalloHttp::red("ListenBrainz sin token"));
         };
         let url = format!("{HOST}{RUTA_VALIDACION}");
-        if !super::url_permitida(&url) {
+        if !url_permitida(&url) {
             return Err(FalloHttp::red("host no permitido"));
         }
         let respuesta = self
@@ -155,7 +169,7 @@ impl ClienteListenBrainz {
 
     fn post(&self, ruta: &str, token: &str, cuerpo: &str) -> Result<String, FalloHttp> {
         let url = format!("{HOST}{ruta}");
-        if !super::url_permitida(&url) {
+        if !url_permitida(&url) {
             return Err(FalloHttp::red("host no permitido"));
         }
         let respuesta = self

@@ -61,3 +61,12 @@ mini_espectro = true
 autoinicio_min = 0
 # Nombre del nodo de PipeWire a capturar (application.name/node.name).
 nodo = "mmmusic"
+
+[radio]
+# Activa el directorio Radio Browser (pestaña Buscar y hilo de red propio).
+# false deja la pestaña Buscar limitada a las emisoras locales.
+directorio = true
+# Descarga y cachea los logos de las emisoras guardadas (image/*, ≤ 512 KB).
+logos = true
+# Segundos de espera antes de dar por fallida la conexión a un stream (5-120).
+espera_conexion_s = 15

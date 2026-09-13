@@ -48,7 +48,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
     let lineas: Vec<Line> = app.estado_reproductor.cola[inicio..fin]
         .iter()
         .enumerate()
-        .map(|(desplazamiento, pista)| {
+        .map(|(desplazamiento, elemento)| {
             let indice = inicio + desplazamiento;
             let actual = app.estado_reproductor.cola_indice == Some(indice);
             let seleccionada = indice == app.seleccion_cola && app.foco == Foco::Cola;
@@ -62,14 +62,21 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
             } else {
                 Style::new().fg(app.paleta.texto)
             };
-            Line::from(Span::styled(
-                format!(
-                    " {} {}",
-                    if actual { app.iconos.reproducida } else { " " },
-                    super::truncar(&pista.titulo, lista.width.saturating_sub(3) as usize)
+            let marcador = if actual { app.iconos.reproducida } else { " " };
+            let texto = match elemento {
+                crate::biblioteca::modelos::ElementoCola::Pista(pista) => {
+                    format!(
+                        " {marcador} {}",
+                        super::truncar(&pista.titulo, lista.width.saturating_sub(3) as usize)
+                    )
+                }
+                crate::biblioteca::modelos::ElementoCola::Emisora(emisora) => format!(
+                    " {marcador} {} {}",
+                    app.iconos.emisora,
+                    super::truncar(&emisora.nombre, lista.width.saturating_sub(5) as usize)
                 ),
-                estilo,
-            ))
+            };
+            Line::from(Span::styled(texto, estilo))
         })
         .collect();
     frame.render_widget(

@@ -6,6 +6,7 @@ pub mod cola;
 pub mod inicio;
 pub mod pistas;
 pub mod playlists;
+pub mod radio;
 pub mod visual;
 
 use ratatui::Frame;
@@ -26,6 +27,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
         Vista::Albumes => albumes::dibujar(frame, app, contenido),
         Vista::Pistas => pistas::dibujar(frame, app, contenido),
         Vista::Playlists => playlists::dibujar(frame, app, contenido),
+        Vista::Radio => radio::dibujar(frame, app, contenido),
         Vista::Visual => {}
     }
     frame.render_widget(
@@ -134,6 +136,17 @@ fn ayuda_contextual(app: &AppEstado) -> String {
         (Vista::Playlists, _) => {
             " Enter abrir · N nueva · R renombrar · D eliminar · i importar · ? ayuda"
         }
+        (Vista::Radio, _) => match app.pestana_radio {
+            crate::app::PestanaRadio::Favoritas | crate::app::PestanaRadio::Todas => {
+                " Enter escuchar · a cola · L favorita · N nueva · i importar · [ ] pestaña"
+            }
+            crate::app::PestanaRadio::Buscar => {
+                " Tab campo · Enter buscar/escuchar · a guardar · L favorita · f título ICY"
+            }
+            crate::app::PestanaRadio::Sonando => {
+                " f buscar en la biblioteca · [ ] pestaña · Espacio pausar"
+            }
+        },
         _ => " Enter reproducir · h volver · a cola · A a continuación · ? ayuda",
     }
     .to_string()

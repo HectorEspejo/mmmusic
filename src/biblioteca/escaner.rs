@@ -108,8 +108,7 @@ fn ejecutar(
     cancelacion: &AtomicBool,
     tx: &Sender<AppEvento>,
 ) -> Result<()> {
-    let mut conn = bd::abrir(ruta_bd)?;
-    bd::migrar(&mut conn)?;
+    let mut conn = bd::abrir_y_migrar(ruta_bd)?;
     if consultas::escaneos::marcar_huerfanos(&conn)? > 0 {
         warn!("se marcaron escaneos interrumpidos como error");
     }

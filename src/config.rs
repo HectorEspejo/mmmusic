@@ -19,6 +19,7 @@ pub struct Config {
     pub tema: ConfigTema,
     pub scrobbling: ConfigScrobbling,
     pub visuales: ConfigVisuales,
+    pub radio: ConfigRadio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +179,24 @@ impl Default for ConfigVisuales {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigRadio {
+    pub directorio: bool,
+    pub logos: bool,
+    pub espera_conexion_s: u64,
+}
+
+impl Default for ConfigRadio {
+    fn default() -> Self {
+        Self {
+            directorio: true,
+            logos: true,
+            espera_conexion_s: 15,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CargaConfig {
     pub config: Config,
@@ -264,6 +283,13 @@ impl Config {
             warn!("biblioteca.carpetas vacía; se usa ~/Music");
             self.biblioteca.carpetas = vec!["~/Music".to_string()];
         }
+        if !(5..=120).contains(&self.radio.espera_conexion_s) {
+            warn!(
+                valor = self.radio.espera_conexion_s,
+                "radio.espera_conexion_s fuera de rango; se usa 15"
+            );
+            self.radio.espera_conexion_s = 15;
+        }
     }
 
     pub fn carpetas_expandidas(&self) -> Vec<PathBuf> {
@@ -285,6 +311,7 @@ pub struct Rutas {
     pub credenciales: PathBuf,
     pub base_datos: PathBuf,
     pub cache_caratulas: PathBuf,
+    pub cache_logos: PathBuf,
     pub dir_logs: PathBuf,
     pub dir_tema: PathBuf,
     pub fichero_tema: PathBuf,
@@ -302,6 +329,7 @@ impl Rutas {
             credenciales: proyecto.config_dir().join("credenciales.toml"),
             base_datos: proyecto.data_dir().join("mmmusic.db"),
             cache_caratulas: proyecto.cache_dir().join("caratulas"),
+            cache_logos: proyecto.cache_dir().join("logos"),
             dir_logs: proyecto
                 .state_dir()
                 .map(Path::to_path_buf)
@@ -312,7 +340,11 @@ impl Rutas {
     }
 
     pub fn crear_directorios(&self) -> Result<()> {
-        let mut directorios = vec![self.cache_caratulas.clone(), self.dir_logs.clone()];
+        let mut directorios = vec![
+            self.cache_caratulas.clone(),
+            self.cache_logos.clone(),
+            self.dir_logs.clone(),
+        ];
         if let Some(padre) = self.base_datos.parent() {
             directorios.push(padre.to_path_buf());
         }
@@ -472,6 +504,21 @@ nodo = ""
         assert_eq!(config.visuales.nodo, "mmmusic");
         assert_eq!(config.visuales.predeterminada, "espectro");
         assert_eq!(config.visuales.autoinicio_min, 1_440);
+    }
+
+    #[test]
+    fn radio_se_parsea_y_acota() {
+        let texto = r#"
+[radio]
+directorio = false
+logos = false
+espera_conexion_s = 1
+"#;
+        let mut config: Config = toml::from_str(texto).expect("parseo");
+        assert!(!config.radio.directorio);
+        assert!(!config.radio.logos);
+        config.validar();
+        assert_eq!(config.radio.espera_conexion_s, 15);
     }
 
     #[test]

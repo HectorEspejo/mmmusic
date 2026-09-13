@@ -30,7 +30,7 @@ fn encola_y_persiste_envios_al_reabrir() {
         &conn,
         SERVICIO_LISTENBRAINZ,
         "scrobble",
-        1,
+        consultas::envios::OrigenEnvio::Pista(1),
         Some(1),
         Some("2026-09-12T10:00:00Z"),
     )
@@ -57,10 +57,24 @@ fn encola_y_persiste_envios_al_reabrir() {
 #[test]
 fn love_reemplaza_al_pendiente_anterior() {
     let (_dir, conn) = bd_con_pista();
-    let primero =
-        consultas::envios::encolar(&conn, SERVICIO_LASTFM, "love", 1, None, None).expect("love");
-    let segundo = consultas::envios::encolar(&conn, SERVICIO_LASTFM, "unlove", 1, None, None)
-        .expect("unlove");
+    let primero = consultas::envios::encolar(
+        &conn,
+        SERVICIO_LASTFM,
+        "love",
+        consultas::envios::OrigenEnvio::Pista(1),
+        None,
+        None,
+    )
+    .expect("love");
+    let segundo = consultas::envios::encolar(
+        &conn,
+        SERVICIO_LASTFM,
+        "unlove",
+        consultas::envios::OrigenEnvio::Pista(1),
+        None,
+        None,
+    )
+    .expect("unlove");
 
     let estado_primero: String = conn
         .query_row(
@@ -93,10 +107,24 @@ fn love_reemplaza_al_pendiente_anterior() {
 #[test]
 fn reprograma_solo_los_errores_de_autenticacion() {
     let (_dir, conn) = bd_con_pista();
-    let auth = consultas::envios::encolar(&conn, SERVICIO_LISTENBRAINZ, "scrobble", 1, None, None)
-        .expect("auth");
-    let red = consultas::envios::encolar(&conn, SERVICIO_LISTENBRAINZ, "scrobble", 1, None, None)
-        .expect("red");
+    let auth = consultas::envios::encolar(
+        &conn,
+        SERVICIO_LISTENBRAINZ,
+        "scrobble",
+        consultas::envios::OrigenEnvio::Pista(1),
+        None,
+        None,
+    )
+    .expect("auth");
+    let red = consultas::envios::encolar(
+        &conn,
+        SERVICIO_LISTENBRAINZ,
+        "scrobble",
+        consultas::envios::OrigenEnvio::Pista(1),
+        None,
+        None,
+    )
+    .expect("red");
     consultas::envios::marcar_error(
         &conn,
         auth,
@@ -148,8 +176,15 @@ fn reprograma_solo_los_errores_de_autenticacion() {
 #[test]
 fn descarta_al_agotar_los_reintentos() {
     let (_dir, conn) = bd_con_pista();
-    let envio = consultas::envios::encolar(&conn, SERVICIO_LISTENBRAINZ, "scrobble", 1, None, None)
-        .expect("encolar");
+    let envio = consultas::envios::encolar(
+        &conn,
+        SERVICIO_LISTENBRAINZ,
+        "scrobble",
+        consultas::envios::OrigenEnvio::Pista(1),
+        None,
+        None,
+    )
+    .expect("encolar");
     consultas::envios::marcar_error(
         &conn,
         envio,

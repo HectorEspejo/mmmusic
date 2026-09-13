@@ -96,11 +96,7 @@ fn dibujar_detalle(frame: &mut Frame, app: &AppEstado, area: Rect) {
         return;
     }
 
-    let id_sonando = app
-        .estado_reproductor
-        .pista_actual
-        .as_ref()
-        .map(|pista| pista.id);
+    let id_sonando = app.estado_reproductor.pista_actual().map(|pista| pista.id);
     let (inicio, fin) = super::ventana(pistas.len(), app.seleccion, interior.height as usize);
     let lineas: Vec<Line> = pistas[inicio..fin]
         .iter()

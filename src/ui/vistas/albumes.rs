@@ -221,11 +221,7 @@ fn dibujar_detalle(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
     if detalle.pistas.is_empty() || cuerpo.height == 0 {
         return;
     }
-    let id_sonando = app
-        .estado_reproductor
-        .pista_actual
-        .as_ref()
-        .map(|pista| pista.id);
+    let id_sonando = app.estado_reproductor.pista_actual().map(|pista| pista.id);
     let (inicio, fin) = super::ventana(detalle.pistas.len(), app.seleccion, cuerpo.height as usize);
     let lineas: Vec<Line> = detalle.pistas[inicio..fin]
         .iter()

@@ -51,8 +51,15 @@ fn ejecutar_tui() -> Result<()> {
     rutas.crear_directorios()?;
     let _guardia_logs = iniciar_logs(&rutas)?;
     let carga = Config::cargar(&rutas.config)?;
-    let mut conn = bd::abrir(&rutas.base_datos)?;
-    bd::migrar(&mut conn)?;
+    bd::limpiar_copia_previa_si_migrada(&rutas.base_datos)?;
+    let conn = bd::abrir_y_migrar(&rutas.base_datos)?;
+    consultas::ajustes::sembrar(
+        &conn,
+        &[
+            ("radio_pestana", "favoritas"),
+            ("radiobrowser_servidor", ""),
+        ],
+    )?;
     if consultas::escaneos::marcar_huerfanos(&conn)? > 0 {
         tracing::warn!("se marcaron escaneos interrumpidos como error");
     }
@@ -70,6 +77,12 @@ fn ejecutar_tui() -> Result<()> {
         app.notificar(
             NivelAviso::Aviso,
             format!("No se pudieron leer los ajustes de visuales: {error:#}"),
+        );
+    }
+    if let Err(error) = app.aplicar_ajustes_radio(&conn) {
+        app.notificar(
+            NivelAviso::Aviso,
+            format!("No se pudieron leer los ajustes de radio: {error:#}"),
         );
     }
     if let Some(aviso) = aviso_tema {
@@ -108,6 +121,26 @@ fn ejecutar_tui() -> Result<()> {
                 None
             }
         };
+    let manejo_directorio = if carga.config.radio.directorio {
+        match mmmusic::radio::radiobrowser::lanzar(
+            rutas.base_datos.clone(),
+            rutas.cache_logos.clone(),
+            carga.config.radio.logos,
+            tx_app.clone(),
+        ) {
+            Ok(manejo) => Some(manejo),
+            Err(error) => {
+                app.notificar(
+                    NivelAviso::Aviso,
+                    format!("Directorio de radio desactivado: {error:#}"),
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    app.directorio = manejo_directorio;
     let carga_credenciales = credenciales::cargar(&rutas.credenciales)?;
     if carga_credenciales.permisos_corregidos {
         app.notificar(
@@ -144,6 +177,7 @@ fn ejecutar_tui() -> Result<()> {
     let (manejo_reproductor, rx_estado) = reproductor::lanzar(
         rutas.base_datos.clone(),
         carga.config.reproductor.volumen_inicial,
+        carga.config.radio.espera_conexion_s,
         tx_app.clone(),
         manejo_scrobbling.emisor(),
     )?;
@@ -194,6 +228,9 @@ fn ejecutar_tui() -> Result<()> {
         manejo.apagar();
     }
     if let Some(manejo) = manejo_colores {
+        manejo.apagar();
+    }
+    if let Some(manejo) = app.directorio.take() {
         manejo.apagar();
     }
     manejo_scrobbling.apagar();

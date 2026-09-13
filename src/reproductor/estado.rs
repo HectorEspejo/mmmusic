@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::biblioteca::modelos::PistaResumen;
+use crate::biblioteca::modelos::{ElementoCola, EmisoraResumen, PistaResumen};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Estado {
@@ -72,25 +72,54 @@ impl fmt::Display for Repeticion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Estado de conexión de un stream de radio.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EstadoStream {
+    Conectando,
+    Almacenando { segundos: f32 },
+    EnDirecto,
+    Reconectando(u32),
+    Rendido,
+}
+
+impl EstadoStream {
+    pub fn etiqueta(&self) -> &'static str {
+        match self {
+            EstadoStream::Conectando => "conectando",
+            EstadoStream::Almacenando { .. } => "almacenando",
+            EstadoStream::EnDirecto => "EN DIRECTO",
+            EstadoStream::Reconectando(_) => "reconectando",
+            EstadoStream::Rendido => "rendido",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct EstadoReproduccion {
     pub estado: Estado,
-    pub pista_actual: Option<PistaResumen>,
+    pub elemento: Option<ElementoCola>,
     pub posicion_ms: i64,
     pub duracion_ms: i64,
     pub volumen: u8,
     pub silencio: bool,
     pub aleatorio: bool,
     pub repeticion: Repeticion,
-    pub cola: Vec<PistaResumen>,
+    pub cola: Vec<ElementoCola>,
     pub cola_indice: Option<usize>,
+    pub stream: Option<EstadoStream>,
+    pub titulo_icy: Option<String>,
+    pub tiempo_escuchando_ms: i64,
+    pub codec: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub cache_segundos: f32,
+    pub reconexiones: u32,
 }
 
 impl Default for EstadoReproduccion {
     fn default() -> Self {
         Self {
             estado: Estado::Detenido,
-            pista_actual: None,
+            elemento: None,
             posicion_ms: 0,
             duracion_ms: 0,
             volumen: 80,
@@ -99,6 +128,13 @@ impl Default for EstadoReproduccion {
             repeticion: Repeticion::No,
             cola: Vec::new(),
             cola_indice: None,
+            stream: None,
+            titulo_icy: None,
+            tiempo_escuchando_ms: 0,
+            codec: None,
+            bitrate_kbps: None,
+            cache_segundos: 0.0,
+            reconexiones: 0,
         }
     }
 }
@@ -113,11 +149,35 @@ impl EstadoReproduccion {
     }
 
     pub fn pista_cargada(&self) -> bool {
-        self.pista_actual.is_some()
+        self.elemento.is_some()
+    }
+
+    pub fn pista_actual(&self) -> Option<&PistaResumen> {
+        self.elemento.as_ref().and_then(ElementoCola::pista)
+    }
+
+    pub fn emisora_actual(&self) -> Option<&EmisoraResumen> {
+        self.elemento.as_ref().and_then(ElementoCola::emisora)
+    }
+
+    pub fn es_emisora(&self) -> bool {
+        self.elemento.as_ref().is_some_and(ElementoCola::es_emisora)
+    }
+
+    pub fn en_directo(&self) -> bool {
+        matches!(self.stream, Some(EstadoStream::EnDirecto))
+    }
+
+    /// Título a mostrar en la interfaz: ICY si lo hay, si no el nombre del
+    /// elemento (título de pista o nombre de emisora).
+    pub fn titulo_mostrado(&self) -> Option<&str> {
+        self.titulo_icy
+            .as_deref()
+            .or_else(|| self.elemento.as_ref().map(ElementoCola::titulo))
     }
 
     pub fn progreso(&self) -> f64 {
-        if self.duracion_ms <= 0 {
+        if self.es_emisora() || self.duracion_ms <= 0 {
             0.0
         } else {
             (self.posicion_ms as f64 / self.duracion_ms as f64).clamp(0.0, 1.0)

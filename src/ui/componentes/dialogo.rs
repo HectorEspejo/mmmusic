@@ -19,6 +19,21 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
         Dialogo::Texto { titulo, valor, .. } => {
             dibujar_texto(frame, app, area, titulo, valor);
         }
+        Dialogo::Formulario {
+            titulo,
+            campos,
+            enfocado,
+            error,
+            ..
+        } => dibujar_formulario(
+            frame,
+            app,
+            area,
+            titulo,
+            campos,
+            *enfocado,
+            error.as_deref(),
+        ),
         Dialogo::Selector {
             titulo, seleccion, ..
         } => dibujar_selector(frame, app, area, titulo, *seleccion),
@@ -97,6 +112,63 @@ fn dibujar_texto(frame: &mut Frame, app: &AppEstado, area: Rect, titulo: &str, v
         ]),
         interior,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dibujar_formulario(
+    frame: &mut Frame,
+    app: &AppEstado,
+    area: Rect,
+    titulo: &str,
+    campos: &[crate::app::CampoDialogo],
+    enfocado: usize,
+    error: Option<&str>,
+) {
+    let alto = (campos.len() as u16 * 2 + 6).min(area.height.saturating_sub(2));
+    let destino = centrar(area, 64, alto);
+    let interior = marco(frame, app, destino, titulo);
+    let mut lineas = vec![Line::from("")];
+    for (indice, campo) in campos.iter().enumerate() {
+        let activo = indice == enfocado;
+        let estilo_etiqueta = if activo {
+            Style::new().fg(app.paleta.acento)
+        } else {
+            Style::new().fg(app.paleta.secundario)
+        };
+        lineas.push(Line::from(vec![
+            Span::styled(format!("  {}: ", campo.etiqueta), estilo_etiqueta),
+            Span::styled(
+                if campo.valor.is_empty() {
+                    campo.pista.clone().unwrap_or_default()
+                } else {
+                    campo.valor.clone()
+                },
+                if campo.valor.is_empty() {
+                    Style::new().fg(app.paleta.secundario)
+                } else {
+                    Style::new()
+                        .fg(app.paleta.texto)
+                        .add_modifier(Modifier::BOLD)
+                },
+            ),
+            Span::styled(
+                if activo { "▌" } else { "" },
+                Style::new().fg(app.paleta.acento),
+            ),
+        ]));
+        lineas.push(Line::from(""));
+    }
+    if let Some(error) = error {
+        lineas.push(Line::from(Span::styled(
+            format!("  {error}"),
+            Style::new().fg(app.paleta.error),
+        )));
+    }
+    lineas.push(Line::from(Span::styled(
+        "  Tab campo · Enter aceptar · Esc cancelar",
+        Style::new().fg(app.paleta.secundario),
+    )));
+    frame.render_widget(Paragraph::new(lineas).alignment(Alignment::Left), interior);
 }
 
 fn dibujar_selector(

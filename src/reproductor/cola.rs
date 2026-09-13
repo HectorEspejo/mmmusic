@@ -1,11 +1,11 @@
 use rand::seq::SliceRandom;
 
 use super::estado::Repeticion;
-use crate::biblioteca::modelos::PistaResumen;
+use crate::biblioteca::modelos::ElementoCola;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemCola {
-    pub pista: PistaResumen,
+    pub elemento: ElementoCola,
     pub posicion_orig: u32,
 }
 
@@ -45,20 +45,23 @@ impl Cola {
         self.indice.and_then(|indice| self.items.get(indice))
     }
 
-    pub fn pistas(&self) -> Vec<PistaResumen> {
-        self.items.iter().map(|item| item.pista.clone()).collect()
+    pub fn elementos(&self) -> Vec<ElementoCola> {
+        self.items
+            .iter()
+            .map(|item| item.elemento.clone())
+            .collect()
     }
 
-    pub fn reemplazar(&mut self, pistas: Vec<PistaResumen>, indice: usize) {
+    pub fn reemplazar(&mut self, elementos: Vec<ElementoCola>, indice: usize) {
         self.siguiente_orig = 0;
-        self.items = pistas
+        self.items = elementos
             .into_iter()
             .enumerate()
-            .map(|(posicion, pista)| {
+            .map(|(posicion, elemento)| {
                 let posicion_orig = posicion as u32;
                 self.siguiente_orig = posicion_orig + 1;
                 ItemCola {
-                    pista,
+                    elemento,
                     posicion_orig,
                 }
             })
@@ -73,7 +76,7 @@ impl Cola {
         }
     }
 
-    pub fn restaurar(&mut self, items: Vec<(PistaResumen, u32)>, indice: Option<usize>) {
+    pub fn restaurar(&mut self, items: Vec<(ElementoCola, u32)>, indice: Option<usize>) {
         self.siguiente_orig = items
             .iter()
             .map(|(_, posicion_orig)| *posicion_orig + 1)
@@ -81,19 +84,19 @@ impl Cola {
             .unwrap_or(0);
         self.items = items
             .into_iter()
-            .map(|(pista, posicion_orig)| ItemCola {
-                pista,
+            .map(|(elemento, posicion_orig)| ItemCola {
+                elemento,
                 posicion_orig,
             })
             .collect();
         self.indice = indice.filter(|valor| *valor < self.items.len());
     }
 
-    pub fn anadir_al_final(&mut self, pistas: Vec<PistaResumen>) -> bool {
+    pub fn anadir_al_final(&mut self, elementos: Vec<ElementoCola>) -> bool {
         let estaba_vacia = self.items.is_empty();
-        for pista in pistas {
+        for elemento in elementos {
             self.items.push(ItemCola {
-                pista,
+                elemento,
                 posicion_orig: self.siguiente_orig,
             });
             self.siguiente_orig += 1;
@@ -104,13 +107,13 @@ impl Cola {
         estaba_vacia
     }
 
-    pub fn reproducir_a_continuacion(&mut self, pistas: Vec<PistaResumen>) {
+    pub fn reproducir_a_continuacion(&mut self, elementos: Vec<ElementoCola>) {
         let base = self.indice.map(|indice| indice + 1).unwrap_or(0);
-        let nuevos: Vec<ItemCola> = pistas
+        let nuevos: Vec<ItemCola> = elementos
             .into_iter()
-            .map(|pista| {
+            .map(|elemento| {
                 let item = ItemCola {
-                    pista,
+                    elemento,
                     posicion_orig: self.siguiente_orig,
                 };
                 self.siguiente_orig += 1;
@@ -206,19 +209,21 @@ impl Cola {
         }
     }
 
-    pub fn anterior(&self, posicion_ms: i64) -> Option<usize> {
+    /// Elemento anterior. Sobre una emisora siempre va al anterior; sobre una
+    /// pista reinicia si ya han pasado más de tres segundos.
+    pub fn anterior(&self, es_emisora: bool, posicion_ms: i64) -> Option<usize> {
         let indice = self.indice?;
-        if posicion_ms > 3000 {
+        if !es_emisora && posicion_ms > 3000 {
             Some(indice)
         } else {
             Some(indice.saturating_sub(1))
         }
     }
 
-    pub fn persistible(&self) -> Vec<(i64, u32)> {
+    pub fn persistible(&self) -> Vec<(ElementoCola, u32)> {
         self.items
             .iter()
-            .map(|item| (item.pista.id, item.posicion_orig))
+            .map(|item| (item.elemento.clone(), item.posicion_orig))
             .collect()
     }
 
@@ -243,9 +248,10 @@ impl Cola {
             self.indice = None;
             return;
         }
-        let actual = self.actual().map(|item| item.pista.id);
+        let actual = self.actual().map(|item| item.elemento.clone());
         self.items.sort_by_key(|item| item.posicion_orig);
-        self.indice = actual.and_then(|id| self.items.iter().position(|item| item.pista.id == id));
+        self.indice = actual
+            .and_then(|elemento| self.items.iter().position(|item| item.elemento == elemento));
     }
 
     fn reordenar_aleatorio(&mut self) {
@@ -253,7 +259,7 @@ impl Cola {
         let mut resto: Vec<ItemCola> = self
             .items
             .iter()
-            .filter(|item| Some(item.pista.id) != actual.map(|a| a.pista.id))
+            .filter(|item| Some(&item.elemento) != actual.map(|a| &a.elemento))
             .cloned()
             .collect();
         let mut generador = rand::rng();
@@ -281,13 +287,23 @@ fn mover_indice(indice: usize, de: usize, a: usize) -> usize {
 #[cfg(test)]
 mod pruebas {
     use super::*;
+    use crate::biblioteca::modelos::{EmisoraResumen, PistaResumen};
 
-    fn pista(id: i64, titulo: &str) -> PistaResumen {
-        PistaResumen {
+    fn pista(id: i64, titulo: &str) -> ElementoCola {
+        ElementoCola::Pista(PistaResumen {
             id,
             titulo: titulo.to_string(),
             ..PistaResumen::default()
-        }
+        })
+    }
+
+    fn emisora(id: i64, nombre: &str) -> ElementoCola {
+        ElementoCola::Emisora(EmisoraResumen {
+            id,
+            nombre: nombre.to_string(),
+            url: format!("http://emisora{id}.example/stream"),
+            ..EmisoraResumen::default()
+        })
     }
 
     fn cola_con(ids: &[i64]) -> Cola {
@@ -314,31 +330,36 @@ mod pruebas {
     }
 
     #[test]
-    fn anterior_reinicia_si_lleva_mas_de_tres_segundos() {
+    fn anterior_reinicia_pistas_pero_no_emisoras() {
         let mut cola = cola_con(&[1, 2, 3]);
         cola.indice = Some(2);
-        assert_eq!(cola.anterior(4_000), Some(2));
-        assert_eq!(cola.anterior(2_000), Some(1));
+        assert_eq!(cola.anterior(false, 4_000), Some(2));
+        assert_eq!(cola.anterior(false, 2_000), Some(1));
+        assert_eq!(cola.anterior(true, 4_000), Some(1));
         cola.indice = Some(0);
-        assert_eq!(cola.anterior(1_000), Some(0));
+        assert_eq!(cola.anterior(false, 1_000), Some(0));
     }
 
     #[test]
     fn aleatorio_conserva_la_actual_y_restaura_el_orden() {
         let mut cola = cola_con(&[1, 2, 3, 4, 5, 6, 7, 8]);
         cola.indice = Some(3);
-        let actual = cola.actual().map(|item| item.pista.id);
+        let actual = cola.actual().map(|item| item.elemento.clone());
         cola.alternar_aleatorio();
         assert!(cola.aleatorio);
         assert_eq!(cola.indice, Some(0));
-        assert_eq!(cola.actual().map(|item| item.pista.id), actual);
-        let mut ids: Vec<i64> = cola.items.iter().map(|item| item.pista.id).collect();
+        assert_eq!(cola.actual().map(|item| item.elemento.clone()), actual);
+        let mut ids: Vec<i64> = cola
+            .items
+            .iter()
+            .map(|item| item.elemento.pista_id().expect("pista"))
+            .collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         cola.alternar_aleatorio();
         assert!(!cola.aleatorio);
-        assert_eq!(cola.actual().map(|item| item.pista.id), actual);
+        assert_eq!(cola.actual().map(|item| item.elemento.clone()), actual);
         let origenes: Vec<u32> = cola.items.iter().map(|item| item.posicion_orig).collect();
         assert_eq!(origenes, (0..8).collect::<Vec<u32>>());
         assert_eq!(cola.indice, Some(3));
@@ -349,10 +370,16 @@ mod pruebas {
         let mut cola = cola_con(&[1, 2, 3]);
         cola.indice = Some(0);
         cola.reproducir_a_continuacion(vec![pista(9, "N9"), pista(10, "N10")]);
-        let ids: Vec<i64> = cola.items.iter().map(|item| item.pista.id).collect();
+        let ids: Vec<i64> = cola
+            .items
+            .iter()
+            .map(|item| item.elemento.pista_id().expect("pista"))
+            .collect();
         assert_eq!(ids, vec![1, 9, 10, 2, 3]);
         assert_eq!(cola.indice, Some(0));
         assert_eq!(cola.siguiente(), Some(1));
+        cola.reproducir_a_continuacion(vec![emisora(4, "Radio")]);
+        assert!(cola.items[1].elemento.es_emisora());
     }
 
     #[test]
@@ -365,7 +392,10 @@ mod pruebas {
             ResultadoEliminar::QuitadaActual { detener: false }
         );
         assert_eq!(cola.indice, Some(1));
-        assert_eq!(cola.actual().map(|item| item.pista.id), Some(3));
+        assert_eq!(
+            cola.actual().map(|item| item.elemento.pista_id()),
+            Some(Some(3))
+        );
 
         let resultado = cola.eliminar(1);
         assert_eq!(
@@ -395,27 +425,32 @@ mod pruebas {
         let mut cola = cola_con(&[1, 2, 3, 4]);
         cola.indice = Some(2);
         cola.mover(3, 0);
-        let ids: Vec<i64> = cola.items.iter().map(|item| item.pista.id).collect();
+        let ids: Vec<i64> = cola
+            .items
+            .iter()
+            .map(|item| item.elemento.pista_id().expect("pista"))
+            .collect();
         assert_eq!(ids, vec![4, 1, 2, 3]);
-        assert_eq!(cola.actual().map(|item| item.pista.id), Some(3));
+        assert_eq!(
+            cola.actual().map(|item| item.elemento.pista_id()),
+            Some(Some(3))
+        );
     }
 
     #[test]
     fn persistible_y_restaurar_conservan_orden_original() {
-        let mut cola = cola_con(&[1, 2, 3]);
+        let mut cola = Cola::nueva();
+        cola.reemplazar(vec![pista(1, "A"), emisora(2, "Radio"), pista(3, "C")], 0);
         cola.alternar_aleatorio();
         let guardado = cola.persistible();
-        let actual = cola.actual().map(|item| item.pista.id);
+        let actual = cola.actual().map(|item| item.elemento.clone());
         let mut restaurada = Cola::nueva();
         restaurada.aleatorio = true;
-        restaurada.restaurar(
-            guardado
-                .iter()
-                .map(|(id, posicion_orig)| (pista(*id, "X"), *posicion_orig))
-                .collect(),
-            Some(0),
+        restaurada.restaurar(guardado, Some(0));
+        assert_eq!(
+            restaurada.actual().map(|item| item.elemento.clone()),
+            actual
         );
-        assert_eq!(restaurada.actual().map(|item| item.pista.id), actual);
         assert_eq!(restaurada.len(), 3);
     }
 }

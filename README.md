@@ -11,8 +11,9 @@ terminal y MPRIS para Waybar/`playerctl` y las teclas multimedia de Hyprland.
   nuevos o modificados) de MP3, FLAC, OGG/Opus, M4A/AAC y WAV.
 - Reproducción con `libmpv` (gapless, cola persistente con aleatorio y
   repetición, historial con umbral del 50 % o 4 minutos de tiempo real).
-- Vistas Inicio, Buscar, Artistas, Álbumes, Pistas y Playlists, con detalle de
-  artista y de álbum, y panel de cola lateral.
+- Vistas Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists y Radio (sección
+  8, con pestañas Favoritas, Todas, Buscar y Sonando), con detalle de artista y
+  de álbum, y panel de cola lateral mixta (pistas y emisoras).
 - Búsqueda incremental sobre columnas normalizadas (sin diacríticos, CJK
   intacto).
 - Playlists propias con importación/exportación M3U8.
@@ -28,6 +29,12 @@ terminal y MPRIS para Waybar/`playerctl` y las teclas multimedia de Hyprland.
 - Carátulas embebidas o `cover.*` en caché 300×300, renderizadas con
   `ratatui-image` (Kitty/Sixel en terminales compatibles, half-blocks en
   Alacritty).
+- Radio por internet: emisoras por URL (HTTP/ICY/HLS), importación y
+  exportación PLS/M3U, favoritas, títulos ICY con historial por emisora,
+  reconexión automática con esperas crecientes y scrobbling de las canciones
+  anunciadas.
+- Directorio abierto Radio Browser (búsqueda por nombre, país y etiqueta) con
+  caché local de 24 h y descarga acotada de logos.
 - MPRIS (`org.mpris.MediaPlayer2.mmmusic`) para `playerctl`, Waybar y teclas
   multimedia.
 
@@ -65,6 +72,7 @@ Rutas utilizadas:
 - Base de datos: `~/.local/share/mmmusic/mmmusic.db`
 - Credenciales de scrobbling: `~/.config/mmmusic/credenciales.toml` (permisos 600)
 - Caché de carátulas: `~/.cache/mmmusic/caratulas/`
+- Caché de logos de emisora: `~/.cache/mmmusic/logos/`
 - Logs: `~/.local/state/mmmusic/mmmusic.log` (nivel configurable con `RUST_LOG`)
 
 ## Scrobbling
@@ -88,6 +96,50 @@ inferior muestra `↑`, `…N` o `!` según el estado.
 
 `credenciales.toml` es el único fichero no regenerable: haz una copia de
 seguridad aparte (no la subas a ningún repositorio).
+
+## Radio
+
+La sección `8 Radio` permite escuchar emisoras por URL y gestionarlas:
+
+- **Favoritas / Todas**: `Enter` reproduce (reemplaza la cola), `a` añade al
+  final y `A` a continuación; `L` marca o quita la favorita, `N` crea una
+  emisora (nombre y URL), `R` la edita, `D` la elimina y `o`/`O` cambian el
+  orden por nombre o por última reproducción.
+- **Buscar**: consulta Radio Browser por nombre, país y etiqueta (`Tab` cambia
+  de campo, `/` enfoca Nombre). `Enter` guarda y reproduce, `a` guarda en la
+  cola y `L` guarda como favorita. Los resultados se cachean 24 h y se podan a
+  7 días; con la red caída se muestran los resultados en caché.
+- **Sonando**: datos de la emisora, estado de conexión, reconexiones, caché y
+  los últimos 50 títulos con `✓` si existen en la biblioteca. `f` busca el
+  título ICY (el seleccionado o el que suena) en la biblioteca.
+
+La cola admite emisoras junto a las pistas (marcadas con `◉` y sin duración) y
+la barra inferior pasa a modo directo con el estado, el título ICY y el tiempo
+escuchando. MPRIS anuncia las emisoras sin `length` y con `CanSeek = false`.
+
+### Importar y exportar
+
+`i` importa un fichero PLS o M3U/M3U8 local (las duplicadas por URL se omiten
+y las entradas sin URL válida se cuentan como inválidas). `e` exporta las
+favoritas a `Radio favoritas.m3u8` en la carpeta de playlists, pidiendo
+confirmación si ya existe.
+
+### Radio Browser y red
+
+El directorio se consulta en un hilo propio compartiendo el cliente HTTP de
+mmmusic (`red/cliente.rs`, `ureq` + rustls). El espejo se resuelve por DNS de
+`all.api.radio-browser.info` (consulta directa e inversa) y se guarda 24 h en
+la base; ante fallos se prueban hasta 3 espejos por búsqueda y ante un 429 se
+espera 5 minutos. Se envía un `User-Agent` identificativo y un click por
+emisora y día (`/json/url/{uuid}`).
+
+Los streams de audio los abre siempre `mpv`, nunca `ureq`. Los logos son la
+única descarga fuera de la lista cerrada de hosts: solo https, solo
+`image/*`, ≤ 512 KB, 5 s, 3 redirecciones, tratados como no confiables y
+cacheados a 300×300 en `~/.cache/mmmusic/logos/{id}.jpg`. Con
+`radio.directorio = false` no se lanza el hilo de directorio y la pestaña
+Buscar se limita a las emisoras locales; `radio.logos = false` desactiva los
+logos.
 
 ## Visuales
 
@@ -136,6 +188,7 @@ Globales:
 | `?` | Ayuda |
 | `1`–`6` | Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists |
 | `7` | Modo visual (entrar o salir) |
+| `8` | Radio |
 | `c` | Panel de cola |
 | `Tab` / `Shift+Tab` | Ciclar foco |
 | `Ctrl+r` | Reescanear |
@@ -145,6 +198,12 @@ En el modo visual: `v`/`V` ciclan las visuales, `1`–`6` saltan a una concreta,
 `[`/`]` ajustan la sensibilidad (×0.8 / ×1.25), `b` alterna la paleta
 tema ↔ carátula y `7`/`Esc` salen; los atajos de reproducción y `L` siguen
 activos.
+
+Radio: `[`/`]` cambian de pestaña, `f` busca el título ICY en la biblioteca,
+`Enter` escucha (en Buscar guarda) y `Tab` cicla los campos de búsqueda. Con
+una emisora sonando, `Espacio` pausa y reanuda (si la pausa supera un minuto se
+recarga el stream), `n`/`p` cambian de elemento y `x` detiene; los seeks se
+ignoran porque un stream no tiene línea de tiempo.
 
 Navegación: `j/k/h/l`, flechas, `gg`/`G`, `Ctrl+d`/`Ctrl+u`, `Enter`.
 En la tabla de Pistas, `o` cambia la columna de orden y `O` la invierte.

@@ -123,6 +123,114 @@ pub struct PlaylistResumen {
     pub num_pistas: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emisora {
+    pub id: i64,
+    pub nombre: String,
+    pub nombre_norm: String,
+    pub url: String,
+    pub pagina_web: Option<String>,
+    pub pais: Option<String>,
+    pub etiquetas: Option<String>,
+    pub codec: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub logo_url: Option<String>,
+    pub logo_ruta: Option<String>,
+    pub radiobrowser_uuid: Option<String>,
+    pub favorita: bool,
+    pub anadida_en: String,
+    pub ultima_reproduccion: Option<String>,
+    pub ultimo_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EmisoraResumen {
+    pub id: i64,
+    pub nombre: String,
+    pub url: String,
+    pub pais: Option<String>,
+    pub codec: Option<String>,
+    pub bitrate_kbps: Option<i64>,
+    pub logo_url: Option<String>,
+    pub logo_ruta: Option<String>,
+    pub favorita: bool,
+    pub ultima_reproduccion: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TituloEmisora {
+    pub id: i64,
+    pub emisora_id: i64,
+    pub titulo: String,
+    pub visto_en: String,
+}
+
+/// Elemento de la cola mixta: o una pista de la biblioteca o una emisora.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ElementoCola {
+    Pista(PistaResumen),
+    Emisora(EmisoraResumen),
+}
+
+impl Emisora {
+    pub fn a_resumen(&self) -> EmisoraResumen {
+        EmisoraResumen {
+            id: self.id,
+            nombre: self.nombre.clone(),
+            url: self.url.clone(),
+            pais: self.pais.clone(),
+            codec: self.codec.clone(),
+            bitrate_kbps: self.bitrate_kbps,
+            logo_url: self.logo_url.clone(),
+            logo_ruta: self.logo_ruta.clone(),
+            favorita: self.favorita,
+            ultima_reproduccion: self.ultima_reproduccion.clone(),
+        }
+    }
+}
+
+impl ElementoCola {
+    pub fn pista(&self) -> Option<&PistaResumen> {
+        match self {
+            ElementoCola::Pista(pista) => Some(pista),
+            ElementoCola::Emisora(_) => None,
+        }
+    }
+
+    pub fn emisora(&self) -> Option<&EmisoraResumen> {
+        match self {
+            ElementoCola::Pista(_) => None,
+            ElementoCola::Emisora(emisora) => Some(emisora),
+        }
+    }
+
+    pub fn tipo(&self) -> &'static str {
+        match self {
+            ElementoCola::Pista(_) => "pista",
+            ElementoCola::Emisora(_) => "emisora",
+        }
+    }
+
+    pub fn pista_id(&self) -> Option<i64> {
+        self.pista().map(|pista| pista.id)
+    }
+
+    pub fn emisora_id(&self) -> Option<i64> {
+        self.emisora().map(|emisora| emisora.id)
+    }
+
+    pub fn titulo(&self) -> &str {
+        match self {
+            ElementoCola::Pista(pista) => &pista.titulo,
+            ElementoCola::Emisora(emisora) => &emisora.nombre,
+        }
+    }
+
+    pub fn es_emisora(&self) -> bool {
+        matches!(self, ElementoCola::Emisora(_))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EstadoEscaneo {
     EnCurso,

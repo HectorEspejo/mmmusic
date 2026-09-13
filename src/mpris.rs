@@ -6,6 +6,7 @@ use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player, Time, TrackId};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
+use crate::biblioteca::modelos::ElementoCola;
 use crate::eventos::AppEvento;
 use crate::reproductor::ComandoReproductor;
 use crate::reproductor::estado::{Estado, EstadoReproduccion, Repeticion};
@@ -182,21 +183,48 @@ async fn aplicar_estado(estado: &EstadoReproduccion, player: &Player) {
             Estado::Reproduciendo | Estado::Pausado
         ))
         .await;
-    let _ = player.set_can_seek(estado.pista_cargada()).await;
+    let _ = player
+        .set_can_seek(!estado.es_emisora() && estado.pista_cargada())
+        .await;
 }
 
 fn metadata_de(estado: &EstadoReproduccion) -> Option<Metadata> {
-    let pista = estado.pista_actual.as_ref()?;
-    let trackid = TrackId::try_from(format!("/org/mmmusic/track/{}", pista.id)).ok()?;
-    let mut constructor = Metadata::builder()
-        .trackid(trackid)
-        .title(pista.titulo.clone())
-        .artist([pista.artista.clone()])
-        .album(pista.album.clone())
-        .length(Time::from_millis(pista.duracion_ms))
-        .url(format!("file://{}", pista.ruta));
-    if let Some(caratula) = pista.caratula_ruta.as_ref() {
-        constructor = constructor.art_url(format!("file://{caratula}"));
+    match estado.elemento.as_ref()? {
+        ElementoCola::Pista(pista) => {
+            let trackid = TrackId::try_from(format!("/org/mmmusic/track/{}", pista.id)).ok()?;
+            let mut constructor = Metadata::builder()
+                .trackid(trackid)
+                .title(pista.titulo.clone())
+                .artist([pista.artista.clone()])
+                .album(pista.album.clone())
+                .length(Time::from_millis(pista.duracion_ms))
+                .url(format!("file://{}", pista.ruta));
+            if let Some(caratula) = pista.caratula_ruta.as_ref() {
+                constructor = constructor.art_url(format!("file://{caratula}"));
+            }
+            Some(constructor.build())
+        }
+        ElementoCola::Emisora(emisora) => {
+            let (artista, titulo) = match estado
+                .titulo_icy
+                .as_deref()
+                .and_then(|titulo| crate::radio::icy::parsear(titulo, &emisora.nombre))
+            {
+                Some(parsed) => (parsed.artista.unwrap_or_default(), parsed.titulo),
+                None => (String::new(), emisora.nombre.clone()),
+            };
+            let trackid = TrackId::try_from(format!("/org/mmmusic/radio/{}", emisora.id)).ok()?;
+            let mut constructor = Metadata::builder()
+                .trackid(trackid)
+                .title(titulo)
+                .album(emisora.nombre.clone());
+            if !artista.is_empty() {
+                constructor = constructor.artist([artista]);
+            }
+            if let Some(logo) = emisora.logo_ruta.as_ref() {
+                constructor = constructor.art_url(format!("file://{logo}"));
+            }
+            Some(constructor.build())
+        }
     }
-    Some(constructor.build())
 }
