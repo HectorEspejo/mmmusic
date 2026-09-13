@@ -11,6 +11,7 @@ use crate::ui::formatear_ms;
 
 const ANCHO_TARJETA: u16 = 16;
 const ALTO_MINIMO_TARJETAS: u16 = 20;
+const EXTRA_ALTO_TARJETA: u16 = 4; // bordes superior e inferior + dos líneas de texto
 
 struct TarjetaInicio {
     album_id: i64,
@@ -36,30 +37,35 @@ fn dibujar_tarjetas(frame: &mut Frame, app: &mut AppEstado, interior: Rect) {
         dibujar_texto(frame, app, interior);
         return;
     }
-    let alturas = repartir_alto(interior.height);
     let mut y = interior.y;
-    for (indice_bloque, altura) in alturas.iter().enumerate() {
+    for indice_bloque in 0..3 {
+        let tarjetas = tarjetas_del_bloque(app, indice_bloque);
+        let alto_bloque = if tarjetas.is_empty() {
+            2 // título + mensaje
+        } else {
+            1 + alto_tarjeta(app, ANCHO_TARJETA, interior.height)
+        };
+        let disponible = interior.bottom().saturating_sub(y);
+        if disponible < 2 {
+            break;
+        }
         let zona = Rect {
             y,
-            height: *altura,
+            height: alto_bloque.min(disponible),
             ..interior
         };
-        dibujar_bloque(frame, app, zona, indice_bloque);
-        y += altura;
+        dibujar_bloque(frame, app, zona, indice_bloque, &tarjetas);
+        y = zona.bottom() + 1; // una fila en blanco separa los bloques
     }
 }
 
-fn repartir_alto(alto: u16) -> [u16; 3] {
-    let base = alto / 3;
-    let resto = alto % 3;
-    let mut alturas = [base; 3];
-    for altura in alturas.iter_mut().take(resto as usize) {
-        *altura += 1;
-    }
-    alturas
-}
-
-fn dibujar_bloque(frame: &mut Frame, app: &mut AppEstado, zona: Rect, indice_bloque: usize) {
+fn dibujar_bloque(
+    frame: &mut Frame,
+    app: &mut AppEstado,
+    zona: Rect,
+    indice_bloque: usize,
+    tarjetas: &[TarjetaInicio],
+) {
     let enfocado = app.bloque_inicio == indice_bloque && app.foco == Foco::Contenido;
     let estilo_titulo = if enfocado {
         Style::new()
@@ -81,10 +87,9 @@ fn dibujar_bloque(frame: &mut Frame, app: &mut AppEstado, zona: Rect, indice_blo
         height: zona.height.saturating_sub(1),
         ..zona
     };
-    if cuerpo.height < 3 {
+    if cuerpo.height == 0 {
         return;
     }
-    let tarjetas = tarjetas_del_bloque(app, indice_bloque);
     if tarjetas.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -95,7 +100,10 @@ fn dibujar_bloque(frame: &mut Frame, app: &mut AppEstado, zona: Rect, indice_blo
         );
         return;
     }
-    dibujar_fila_tarjetas(frame, app, cuerpo, &tarjetas);
+    if cuerpo.height < 3 {
+        return;
+    }
+    dibujar_fila_tarjetas(frame, app, cuerpo, tarjetas);
 }
 
 fn titulo_bloque(indice: usize) -> &'static str {
@@ -169,12 +177,21 @@ fn tarjeta_de_album(album: &AlbumResumen, indice_flat: usize) -> TarjetaInicio {
     }
 }
 
+/// Alto que necesita una tarjeta para envolver su carátula, el texto y el
+/// borde, sin estirarse por todo el alto del bloque.
+fn alto_tarjeta(app: &AppEstado, ancho: u16, alto_disponible: u16) -> u16 {
+    let fuente = app.caratulas.fuente().unwrap_or(imagen::FUENTE_POR_DEFECTO);
+    let alto_caratula = imagen::alto_caratula_ajustada(ancho.saturating_sub(2), fuente);
+    (alto_caratula + EXTRA_ALTO_TARJETA).min(alto_disponible)
+}
+
 fn dibujar_fila_tarjetas(
     frame: &mut Frame,
     app: &mut AppEstado,
     area: Rect,
     tarjetas: &[TarjetaInicio],
 ) {
+    let alto = alto_tarjeta(app, ANCHO_TARJETA, area.height);
     let visibles = (area.width / ANCHO_TARJETA).max(1) as usize;
     let columna = app.columna_inicio.min(tarjetas.len().saturating_sub(1));
     let inicio = columna
@@ -189,7 +206,7 @@ fn dibujar_fila_tarjetas(
         let destino = Rect {
             x,
             width: ancho,
-            height: area.height,
+            height: alto,
             ..area
         };
         dibujar_tarjeta(
@@ -390,4 +407,125 @@ fn linea_album(album: &AlbumResumen) -> String {
         super::truncar(&album.artista, 18),
         album.anio.map(|anio| anio.to_string()).unwrap_or_default()
     )
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+    use crate::config::{Config, ConfigTema};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui_image::picker::Picker;
+
+    fn app_con_caratula() -> AppEstado {
+        let mut app = AppEstado::nuevo(
+            Config::default(),
+            crate::tema::terminal(&ConfigTema::default()),
+            0,
+            std::path::PathBuf::from("/tmp/tema"),
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.activar_caratulas(Picker::halfblocks(), tx);
+        app.caratulas
+            .insertar(1, image::DynamicImage::new_rgb8(300, 300));
+        app.inicio.recientes.push(PistaListado {
+            id: 1,
+            titulo: "Pista".to_string(),
+            artista: "Artista".to_string(),
+            album: "Álbum".to_string(),
+            album_id: 1,
+            duracion_ms: 180_000,
+            anio: Some(2024),
+            formato: "flac".to_string(),
+            caratula_ruta: None,
+            ruta: "pista.flac".to_string(),
+        });
+        app
+    }
+
+    #[test]
+    fn la_tarjeta_se_ajusta_a_la_caratula_el_texto_y_el_borde() {
+        let app = app_con_caratula();
+        // Fuente 10×20 y ancho interior 14: carátula de 7 celdas + 2 de texto
+        // + 2 de borde.
+        assert_eq!(alto_tarjeta(&app, ANCHO_TARJETA, 40), 11);
+        assert_eq!(
+            alto_tarjeta(&app, ANCHO_TARJETA, 8),
+            8,
+            "nunca debe superar el alto disponible"
+        );
+    }
+
+    #[test]
+    fn los_bloques_se_apilan_pegados_a_su_contenido() {
+        let mut app = app_con_caratula();
+        app.inicio.anadidos.push(AlbumResumen {
+            id: 2,
+            titulo: "Otro álbum".to_string(),
+            artista: "Artista".to_string(),
+            anio: Some(2024),
+            caratula_ruta: None,
+            num_pistas: 1,
+            duracion_ms: 180_000,
+        });
+        app.tamano_terminal = (120, 40);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal de pruebas");
+        terminal
+            .draw(|frame| crate::ui::dibujar(frame, &mut app))
+            .expect("dibujar Inicio");
+
+        let buffer = terminal.backend().buffer();
+        let fila = |texto: &str| {
+            (0..buffer.area.height).find(|y| {
+                let linea: String = (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, *y)))
+                    .map(|celda| celda.symbol())
+                    .collect();
+                linea.contains(texto)
+            })
+        };
+        let primer_titulo = fila("Reproducidas recientemente").expect("primer bloque");
+        let segundo_titulo = fila("Añadidos recientemente").expect("segundo bloque");
+        // Título + tarjeta de 11 filas + fila en blanco de separación.
+        assert_eq!(segundo_titulo, primer_titulo + 13);
+    }
+
+    #[test]
+    fn el_borde_de_la_tarjeta_envuelve_el_contenido() {
+        let mut app = app_con_caratula();
+        app.tamano_terminal = (120, 40);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal de pruebas");
+        terminal
+            .draw(|frame| crate::ui::dibujar(frame, &mut app))
+            .expect("dibujar Inicio");
+
+        let buffer = terminal.backend().buffer();
+        let ancho = buffer.area.width as usize;
+        let esquina = buffer
+            .content()
+            .iter()
+            .enumerate()
+            .filter(|(indice, celda)| {
+                let x = indice % ancho;
+                let y = indice / ancho;
+                y >= 2 && x > 18 && celda.symbol() == "┌"
+            })
+            .map(|(indice, _)| ((indice % ancho) as u16, (indice / ancho) as u16))
+            .min_by_key(|(x, y)| (*y, *x))
+            .expect("esquina superior de la tarjeta");
+        let fondo = (esquina.1..buffer.area.height)
+            .find(|y| {
+                buffer
+                    .cell((esquina.0, *y))
+                    .is_some_and(|celda| celda.symbol() == "└")
+            })
+            .expect("esquina inferior de la tarjeta");
+        assert_eq!(
+            fondo - esquina.1 + 1,
+            alto_tarjeta(&app, ANCHO_TARJETA, 11),
+            "el borde debe medir lo que ocupan carátula, texto y bordes"
+        );
+    }
 }

@@ -230,6 +230,14 @@ enum Contexto {
     Artista { artista_id: i64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Eje {
+    /// En rejillas avanza una fila completa; en listas, `delta` posiciones.
+    Vertical,
+    /// Avanza `delta` posiciones: columna a columna en rejillas.
+    Horizontal,
+}
+
 pub struct AppEstado {
     pub config: Config,
     pub paleta: Paleta,
@@ -445,6 +453,16 @@ impl AppEstado {
             self.vista = modo.vista_previa;
             self.pantalla = modo.pantalla_previa;
             self.seleccion = modo.seleccion_previa;
+        }
+    }
+
+    /// Cierra la ayuda si está visible. Devuelve `true` si la cerró.
+    fn cerrar_ayuda(&mut self) -> bool {
+        if self.ayuda_visible {
+            self.ayuda_visible = false;
+            true
+        } else {
+            false
         }
     }
 
@@ -771,6 +789,9 @@ impl AppEstado {
                 if self.dialogo.is_some() && self.tecla_en_dialogo(&tecla, ctx) {
                     return;
                 }
+                if tecla.code == KeyCode::Esc && self.cerrar_ayuda() {
+                    return;
+                }
                 if self.tecla_en_visual(&tecla, ctx) {
                     return;
                 }
@@ -840,9 +861,7 @@ impl AppEstado {
                 self.debe_salir = true;
             }
             Accion::Cerrar => {
-                if self.ayuda_visible {
-                    self.ayuda_visible = false;
-                } else {
+                if !self.cerrar_ayuda() {
                     self.volver();
                 }
             }
@@ -897,7 +916,7 @@ impl AppEstado {
             Accion::TeclaG => {
                 if self.pendiente_g {
                     self.pendiente_g = false;
-                    self.mover_seleccion(ctx, isize::MIN / 2);
+                    self.mover_seleccion(ctx, Eje::Vertical, isize::MIN / 2);
                 } else {
                     self.pendiente_g = true;
                 }
@@ -909,23 +928,25 @@ impl AppEstado {
                 self.foco = Foco::Contenido;
             }
             Accion::Abajo if self.vista == Vista::Inicio => self.mover_inicio(ctx, 1, 0),
-            Accion::Abajo => self.mover_seleccion(ctx, 1),
+            Accion::Abajo => self.mover_seleccion(ctx, Eje::Vertical, 1),
             Accion::Arriba if self.vista == Vista::Inicio => self.mover_inicio(ctx, -1, 0),
-            Accion::Arriba => self.mover_seleccion(ctx, -1),
+            Accion::Arriba => self.mover_seleccion(ctx, Eje::Vertical, -1),
             Accion::Derecha if self.vista == Vista::Inicio => self.mover_inicio(ctx, 0, 1),
             Accion::Derecha => match self.vista_pantalla_rejilla() {
-                true => self.mover_seleccion(ctx, 1),
+                true => self.mover_seleccion(ctx, Eje::Horizontal, 1),
                 false => self.abrir_seleccion(ctx),
             },
             Accion::Izquierda if self.vista == Vista::Inicio => self.mover_inicio(ctx, 0, -1),
             Accion::Izquierda => match self.vista_pantalla_rejilla() {
-                true => self.mover_seleccion(ctx, -1),
+                true => self.mover_seleccion(ctx, Eje::Horizontal, -1),
                 false => self.volver(),
             },
-            Accion::MediaAbajo => self.mover_seleccion(ctx, PAGINA_SALTOS as isize),
-            Accion::MediaArriba => self.mover_seleccion(ctx, -(PAGINA_SALTOS as isize)),
-            Accion::Primero => self.mover_seleccion(ctx, isize::MIN / 2),
-            Accion::Ultimo => self.mover_seleccion(ctx, isize::MAX / 2),
+            Accion::MediaAbajo => self.mover_seleccion(ctx, Eje::Vertical, PAGINA_SALTOS as isize),
+            Accion::MediaArriba => {
+                self.mover_seleccion(ctx, Eje::Vertical, -(PAGINA_SALTOS as isize))
+            }
+            Accion::Primero => self.mover_seleccion(ctx, Eje::Vertical, isize::MIN / 2),
+            Accion::Ultimo => self.mover_seleccion(ctx, Eje::Vertical, isize::MAX / 2),
             Accion::CiclarOrden => match self.vista {
                 Vista::Pistas => {
                     let posicion = OrdenPistas::TODAS
@@ -1081,8 +1102,8 @@ impl AppEstado {
 
     fn manejar_raton(&mut self, evento: MouseEvent, ctx: &ContextoApp<'_>) {
         match evento.kind {
-            MouseEventKind::ScrollDown => self.mover_seleccion(ctx, 3),
-            MouseEventKind::ScrollUp => self.mover_seleccion(ctx, -3),
+            MouseEventKind::ScrollDown => self.mover_seleccion(ctx, Eje::Vertical, 3),
+            MouseEventKind::ScrollUp => self.mover_seleccion(ctx, Eje::Vertical, -3),
             MouseEventKind::Down(MouseButton::Left) => {
                 let (x, y) = (evento.column, evento.row);
                 let doble = self.ultimo_clic.is_some_and(|(cuando, cx, cy)| {
@@ -1232,7 +1253,14 @@ impl AppEstado {
         }
     }
 
-    fn mover_seleccion(&mut self, ctx: &ContextoApp<'_>, delta: isize) {
+    fn mover_seleccion(&mut self, ctx: &ContextoApp<'_>, eje: Eje, delta: isize) {
+        self.desplazar_seleccion(eje, delta);
+        if self.vista == Vista::Pistas {
+            self.asegurar_pagina(ctx);
+        }
+    }
+
+    fn desplazar_seleccion(&mut self, eje: Eje, delta: isize) {
         if self.foco == Foco::Cola {
             let total = self.estado_reproductor.cola.len();
             if total == 0 {
@@ -1249,17 +1277,17 @@ impl AppEstado {
         if total == 0 {
             return;
         }
-        let paso = if delta.abs() == 1 && self.vista_pantalla_rejilla() {
-            self.columnas_rejilla.max(1) as isize
+        self.seleccion = if delta.abs() == 1 && self.vista_pantalla_rejilla() {
+            let columnas = self.columnas_rejilla.max(1);
+            match eje {
+                Eje::Vertical => mover_en_rejilla(self.seleccion, total - 1, columnas, delta),
+                Eje::Horizontal => mover_indice(self.seleccion, total - 1, delta),
+            }
         } else {
-            delta
+            mover_indice(self.seleccion, total - 1, delta)
         };
-        self.seleccion = mover_indice(self.seleccion, total - 1, paso);
         if self.vista == Vista::Inicio {
             self.sincronizar_inicio_desde_seleccion();
-        }
-        if self.vista == Vista::Pistas {
-            self.asegurar_pagina(ctx);
         }
     }
 
@@ -2371,4 +2399,102 @@ fn mover_indice(actual: usize, ultimo: usize, delta: isize) -> usize {
         return ultimo;
     }
     (actual as isize + delta).clamp(0, ultimo as isize) as usize
+}
+
+/// Movimiento vertical en una rejilla: conserva la columna y no salta de
+/// fila en los extremos.
+fn mover_en_rejilla(actual: usize, ultimo: usize, columnas: usize, filas: isize) -> usize {
+    let columnas = columnas.max(1);
+    let fila = actual / columnas;
+    let columna = actual % columnas;
+    let ultima_fila = ultimo / columnas;
+    let destino = (fila as isize + filas).clamp(0, ultima_fila as isize) as usize;
+    (destino * columnas + columna).min(ultimo)
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+    use crate::biblioteca::modelos::{AlbumResumen, PistaListado};
+    use crate::config::ConfigTema;
+
+    fn app_con_albumes(cantidad: usize) -> AppEstado {
+        let mut app = AppEstado::nuevo(
+            Config::default(),
+            crate::tema::terminal(&ConfigTema::default()),
+            0,
+            std::path::PathBuf::from("/tmp/tema"),
+        );
+        app.vista = Vista::Albumes;
+        app.pantalla = Pantalla::Lista;
+        app.columnas_rejilla = 5;
+        app.albumes = (1..=cantidad as i64)
+            .map(|id| AlbumResumen {
+                id,
+                titulo: format!("Álbum {id}"),
+                artista: "Artista".to_string(),
+                anio: Some(2024),
+                caratula_ruta: None,
+                num_pistas: 1,
+                duracion_ms: 1_000,
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn el_movimiento_vertical_de_rejilla_conserva_la_columna() {
+        assert_eq!(mover_en_rejilla(6, 11, 5, -1), 1, "sube una fila");
+        assert_eq!(mover_en_rejilla(1, 11, 5, 1), 6, "baja una fila");
+        assert_eq!(mover_en_rejilla(7, 11, 5, 1), 11, "fila final incompleta");
+        assert_eq!(mover_en_rejilla(11, 11, 5, 1), 11, "no salta en el fondo");
+        assert_eq!(mover_en_rejilla(3, 11, 5, -1), 3, "no salta en el tope");
+        assert_eq!(mover_en_rejilla(11, 11, 5, -1), 6, "recupera su columna");
+    }
+
+    #[test]
+    fn las_flechas_mueven_en_todas_las_direcciones_en_la_rejilla() {
+        let mut app = app_con_albumes(12);
+        app.seleccion = 6;
+        app.desplazar_seleccion(Eje::Vertical, -1);
+        assert_eq!(app.seleccion, 1, "arriba");
+        app.desplazar_seleccion(Eje::Vertical, 1);
+        assert_eq!(app.seleccion, 6, "abajo");
+        app.desplazar_seleccion(Eje::Horizontal, 1);
+        assert_eq!(app.seleccion, 7, "derecha");
+        app.desplazar_seleccion(Eje::Horizontal, -1);
+        assert_eq!(app.seleccion, 6, "izquierda");
+    }
+
+    #[test]
+    fn el_movimiento_vertical_en_listas_es_una_fila() {
+        let mut app = app_con_albumes(12);
+        app.vista = Vista::Pistas;
+        app.pistas = (1..=12)
+            .map(|id| PistaListado {
+                id,
+                ..PistaListado::default()
+            })
+            .collect();
+        app.seleccion = 6;
+        app.desplazar_seleccion(Eje::Vertical, -1);
+        assert_eq!(app.seleccion, 5, "en listas cada flecha mueve un elemento");
+    }
+
+    #[test]
+    fn cerrar_la_ayuda_no_sale_del_modo_visual() {
+        let mut app = app_con_albumes(1);
+        app.entrar_visual(false);
+        app.ayuda_visible = true;
+        assert!(app.cerrar_ayuda(), "el primer Esc cierra la ayuda");
+        assert!(!app.ayuda_visible);
+        assert!(
+            app.modo_visual.is_some(),
+            "cerrar la ayuda no debe salir del modo visual"
+        );
+        assert!(
+            !app.cerrar_ayuda(),
+            "el siguiente Esc ya no tiene ayuda que cerrar"
+        );
+    }
 }
