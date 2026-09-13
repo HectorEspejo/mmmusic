@@ -1,7 +1,7 @@
 use serde_json::Value;
 
-use super::{FalloHttp, interpretar};
 use crate::credenciales::Credenciales;
+use crate::red::cliente::{FalloHttp, agente_http, interpretar, url_permitida};
 
 pub const HOST: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -10,7 +10,7 @@ pub struct Cancion<'a> {
     pub artista: &'a str,
     pub titulo: &'a str,
     pub album: &'a str,
-    pub duracion_ms: i64,
+    pub duracion_ms: Option<i64>,
     pub unix: Option<i64>,
 }
 
@@ -73,7 +73,7 @@ pub struct ClienteLastfm {
 impl ClienteLastfm {
     pub fn nuevo(credenciales: &Credenciales) -> Self {
         Self {
-            agente: super::agente_http(),
+            agente: agente_http(),
             api_key: credenciales.api_key_lastfm().map(str::to_string),
             api_secret: credenciales.api_secret_lastfm().map(str::to_string),
             session_key: credenciales.session_key_lastfm().map(str::to_string),
@@ -89,15 +89,17 @@ impl ClienteLastfm {
     }
 
     pub fn enviar_ahora(&self, cancion: &Cancion<'_>) -> Result<(), FalloHttp> {
-        let extra = vec![
+        let mut extra = vec![
             ("artist".to_string(), cancion.artista.to_string()),
             ("track".to_string(), cancion.titulo.to_string()),
             ("album".to_string(), cancion.album.to_string()),
-            (
-                "duration".to_string(),
-                (cancion.duracion_ms.max(0) / 1000).to_string(),
-            ),
         ];
+        if let Some(duracion_ms) = cancion.duracion_ms {
+            extra.push((
+                "duration".to_string(),
+                (duracion_ms.max(0) / 1000).to_string(),
+            ));
+        }
         self.post("track.updateNowPlaying", extra).map(|_| ())
     }
 
@@ -110,10 +112,12 @@ impl ClienteLastfm {
             extra.push((format!("artist[{indice}]"), cancion.artista.to_string()));
             extra.push((format!("track[{indice}]"), cancion.titulo.to_string()));
             extra.push((format!("album[{indice}]"), cancion.album.to_string()));
-            extra.push((
-                format!("duration[{indice}]"),
-                (cancion.duracion_ms.max(0) / 1000).to_string(),
-            ));
+            if let Some(duracion_ms) = cancion.duracion_ms {
+                extra.push((
+                    format!("duration[{indice}]"),
+                    (duracion_ms.max(0) / 1000).to_string(),
+                ));
+            }
             extra.push((
                 format!("timestamp[{indice}]"),
                 cancion.unix.unwrap_or(0).to_string(),
@@ -144,6 +148,9 @@ impl ClienteLastfm {
     }
 
     fn post(&self, metodo: &str, extra: Vec<(String, String)>) -> Result<String, FalloHttp> {
+        if !url_permitida(HOST) {
+            return Err(FalloHttp::red("host no permitido"));
+        }
         let (Some(api_key), Some(api_secret)) =
             (self.api_key.as_deref(), self.api_secret.as_deref())
         else {
@@ -246,6 +253,9 @@ pub fn obtener_sesion(
 }
 
 fn get(agente: &ureq::Agent, pares: &[(String, String)]) -> Result<String, FalloHttp> {
+    if !url_permitida(HOST) {
+        return Err(FalloHttp::red("host no permitido"));
+    }
     let mut peticion = agente.get(HOST);
     for (clave, valor) in pares {
         peticion = peticion.query(clave, valor);

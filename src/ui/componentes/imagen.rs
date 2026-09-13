@@ -183,18 +183,50 @@ pub fn dibujar(
     album_id: i64,
     caratula_ruta: Option<&str>,
 ) {
-    if !app.config.interfaz.caratulas || area.width < 2 || area.height < 1 {
+    if !app.config.interfaz.caratulas {
         return;
     }
-    if app.caratulas.tiene(album_id) {
-        if let Some(protocolo) = app.caratulas.entradas.get_mut(&album_id) {
+    dibujar_clave(frame, app, area, album_id, caratula_ruta);
+}
+
+/// Clave de caché para el logo de una emisora: ids negativos para no
+/// colisionar con los identificadores de álbum.
+pub fn clave_logo(emisora_id: i64) -> i64 {
+    -emisora_id
+}
+
+pub fn dibujar_logo(
+    frame: &mut Frame,
+    app: &mut AppEstado,
+    area: Rect,
+    emisora_id: i64,
+    logo_ruta: Option<&str>,
+) {
+    if !app.config.radio.logos {
+        return;
+    }
+    dibujar_clave(frame, app, area, clave_logo(emisora_id), logo_ruta);
+}
+
+fn dibujar_clave(
+    frame: &mut Frame,
+    app: &mut AppEstado,
+    area: Rect,
+    clave: i64,
+    caratula_ruta: Option<&str>,
+) {
+    if area.width < 2 || area.height < 1 {
+        return;
+    }
+    if app.caratulas.tiene(clave) {
+        if let Some(protocolo) = app.caratulas.entradas.get_mut(&clave) {
             let destino = destino_ajustado(protocolo, area);
             let widget = StatefulImage::default().resize(Resize::Fit(None));
             frame.render_stateful_widget(widget, destino, protocolo);
             return;
         }
     } else if let Some(ruta) = caratula_ruta {
-        app.caratulas.solicitar(album_id, ruta);
+        app.caratulas.solicitar(clave, ruta);
     }
     frame.render_widget(
         Paragraph::new(Span::styled(

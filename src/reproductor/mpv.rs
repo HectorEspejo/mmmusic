@@ -12,6 +12,13 @@ pub const OPCIONES_INICIALES: &[(&str, &str)] = &[
     ("gapless-audio", "yes"),
     ("ao", "pipewire,"),
     ("audio-client-name", "mmmusic"),
+    ("cache", "yes"),
+    ("demuxer-max-bytes", "32MiB"),
+    (
+        "stream-lavf-o",
+        "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5",
+    ),
+    ("cache-pause", "no"),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +27,16 @@ pub enum Valor {
     Entero(i64),
     Flotante(f64),
     Bandera(bool),
+}
+
+impl Valor {
+    pub fn numero(&self) -> Option<f64> {
+        match self {
+            Valor::Entero(valor) => Some(*valor as f64),
+            Valor::Flotante(valor) => Some(*valor),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +83,13 @@ impl ReproductorMpv {
             ("mute", Format::Flag, 5),
             ("eof-reached", Format::Flag, 6),
             ("idle-active", Format::Flag, 7),
+            ("paused-for-cache", Format::Flag, 8),
+            ("cache-buffering-state", Format::Int64, 9),
+            ("demuxer-cache-duration", Format::Double, 10),
+            ("metadata/by-key/icy-title", Format::String, 11),
+            ("audio-codec-name", Format::String, 12),
+            ("audio-bitrate", Format::Double, 13),
+            ("playlist-count", Format::Int64, 14),
         ];
         for (nombre, formato, id) in propiedades {
             self.mpv
@@ -83,6 +107,26 @@ impl ReproductorMpv {
         self.mpv
             .command("loadfile", &[ruta, "replace"])
             .with_context(|| format!("no se pudo cargar {ruta}"))
+    }
+
+    /// Carga un stream o lista remota con las opciones de caché ya activas.
+    pub fn cargar_stream(&self, url: &str) -> Result<()> {
+        self.mpv
+            .command("loadfile", &[url, "replace"])
+            .with_context(|| format!("no se pudo cargar el stream {url}"))
+    }
+
+    /// Carga una lista PLS/M3U remota; sus entradas quedan como espejos.
+    pub fn cargar_lista(&self, url: &str) -> Result<()> {
+        self.mpv
+            .command("loadlist", &[url, "replace"])
+            .with_context(|| format!("no se pudo cargar la lista {url}"))
+    }
+
+    pub fn siguiente_lista(&self) -> Result<()> {
+        self.mpv
+            .command("playlist-next", &[])
+            .context("no se pudo avanzar de espejo")
     }
 
     pub fn anexar(&self, ruta: &str) -> Result<()> {
@@ -128,6 +172,14 @@ impl ReproductorMpv {
 
     pub fn numero(&self, propiedad: &str) -> Option<f64> {
         self.mpv.get_property::<f64>(propiedad).ok()
+    }
+
+    pub fn entero(&self, propiedad: &str) -> Option<i64> {
+        self.mpv.get_property::<i64>(propiedad).ok()
+    }
+
+    pub fn cadena(&self, propiedad: &str) -> Option<String> {
+        self.mpv.get_property::<String>(propiedad).ok()
     }
 
     pub fn bandera(&self, propiedad: &str) -> Option<bool> {

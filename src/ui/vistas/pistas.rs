@@ -66,11 +66,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
     ])
     .style(encabezado);
 
-    let id_sonando = app
-        .estado_reproductor
-        .pista_actual
-        .as_ref()
-        .map(|pista| pista.id);
+    let id_sonando = app.estado_reproductor.pista_actual().map(|pista| pista.id);
     let filas = app.pistas[inicio..fin]
         .iter()
         .enumerate()

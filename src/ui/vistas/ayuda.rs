@@ -39,8 +39,8 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
         ("Esc", "volver / cerrar"),
         ("?", "mostrar u ocultar esta ayuda"),
         (
-            "1-6",
-            "Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists",
+            "1-8",
+            "Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists, Visual, Radio",
         ),
         ("c", "mostrar u ocultar la cola"),
         ("Tab / Shift+Tab", "ciclar foco sidebar → contenido → cola"),
@@ -105,6 +105,22 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
             "CLI",
             "autorizar-lastfm · probar-servicios · reescanear --completo",
         ),
+    ] {
+        lineas.push(Line::from(vec![
+            Span::styled(format!("   {k:<17} "), tecla),
+            Span::styled(d, descripcion),
+        ]));
+    }
+    añadir_seccion("Radio", &mut lineas);
+    for (k, d) in [
+        ("[ / ]", "pestaña anterior / siguiente"),
+        ("Enter", "escuchar; en Buscar guarda y reproduce"),
+        ("L", "favorita de la emisora seleccionada o sonando"),
+        ("N / R / D", "nueva / editar / eliminar emisora"),
+        ("i / e", "importar PLS/M3U · exportar favoritas M3U8"),
+        ("/", "pestaña Buscar y foco en Nombre"),
+        ("f", "buscar el título ICY en la biblioteca"),
+        ("Tab", "ciclar campos en Buscar"),
     ] {
         lineas.push(Line::from(vec![
             Span::styled(format!("   {k:<17} "), tecla),

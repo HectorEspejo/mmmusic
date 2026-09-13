@@ -6,16 +6,20 @@ use std::time::{Duration, Instant};
 
 use crate::audio::anillo::Anillo;
 use crate::audio::{Analisis, Analizador, EstadoCaptura};
+use crate::biblioteca::bd;
 use crate::biblioteca::consultas;
+use crate::biblioteca::consultas::emisoras::{NuevaEmisora, OrdenEmisoras};
 use crate::biblioteca::consultas::{LIMITE_BUSQUEDA, ResultadosBusqueda};
 use crate::biblioteca::consultas::{OrdenAlbumes, OrdenPistas};
 use crate::biblioteca::escaner::{self, ManejoEscaneo};
 use crate::biblioteca::modelos::{
-    AlbumResumen, ArtistaResumen, DetalleAlbum, DetalleArtista, Inicio, PistaListado,
-    PlaylistResumen,
+    AlbumResumen, ArtistaResumen, DetalleAlbum, DetalleArtista, ElementoCola, EmisoraResumen,
+    Inicio, PistaListado, PlaylistResumen, TituloEmisora,
 };
 use crate::config::{Config, FuentePaleta, ModoIconos};
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso};
+use crate::radio::icy;
+use crate::radio::radiobrowser::{self, ComandoDirectorio, EmisoraDirectorio, ManejoDirectorio};
 use crate::reproductor::estado::{Estado, EstadoReproduccion};
 use crate::reproductor::{ComandoReproductor, ManejoReproductor};
 use crate::scrobbling::estado::EstadoScrobbling;
@@ -52,10 +56,11 @@ pub enum Vista {
     Pistas,
     Playlists,
     Visual,
+    Radio,
 }
 
 impl Vista {
-    pub const TODAS: [Vista; 7] = [
+    pub const TODAS: [Vista; 8] = [
         Vista::Inicio,
         Vista::Buscar,
         Vista::Artistas,
@@ -63,6 +68,7 @@ impl Vista {
         Vista::Pistas,
         Vista::Playlists,
         Vista::Visual,
+        Vista::Radio,
     ];
 
     pub fn numero(self) -> usize {
@@ -74,6 +80,7 @@ impl Vista {
             Vista::Pistas => 5,
             Vista::Playlists => 6,
             Vista::Visual => 7,
+            Vista::Radio => 8,
         }
     }
 
@@ -86,6 +93,7 @@ impl Vista {
             Vista::Pistas => "Pistas",
             Vista::Playlists => "Playlists",
             Vista::Visual => "Visual",
+            Vista::Radio => "Radio",
         }
     }
 
@@ -112,6 +120,144 @@ pub enum Pantalla {
     DetallePlaylist,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PestanaRadio {
+    #[default]
+    Favoritas,
+    Todas,
+    Buscar,
+    Sonando,
+}
+
+impl PestanaRadio {
+    pub const TODAS: [PestanaRadio; 4] = [
+        PestanaRadio::Favoritas,
+        PestanaRadio::Todas,
+        PestanaRadio::Buscar,
+        PestanaRadio::Sonando,
+    ];
+
+    pub fn indice(self) -> usize {
+        match self {
+            PestanaRadio::Favoritas => 0,
+            PestanaRadio::Todas => 1,
+            PestanaRadio::Buscar => 2,
+            PestanaRadio::Sonando => 3,
+        }
+    }
+
+    pub fn titulo(self) -> &'static str {
+        match self {
+            PestanaRadio::Favoritas => "Favoritas",
+            PestanaRadio::Todas => "Todas",
+            PestanaRadio::Buscar => "Buscar",
+            PestanaRadio::Sonando => "Sonando",
+        }
+    }
+
+    pub fn como_str(self) -> &'static str {
+        match self {
+            PestanaRadio::Favoritas => "favoritas",
+            PestanaRadio::Todas => "todas",
+            PestanaRadio::Buscar => "buscar",
+            PestanaRadio::Sonando => "sonando",
+        }
+    }
+
+    pub fn desde_str(texto: &str) -> Option<Self> {
+        match texto {
+            "favoritas" => Some(PestanaRadio::Favoritas),
+            "todas" => Some(PestanaRadio::Todas),
+            "buscar" => Some(PestanaRadio::Buscar),
+            "sonando" => Some(PestanaRadio::Sonando),
+            _ => None,
+        }
+    }
+
+    pub fn anterior(self) -> Self {
+        let indice = (self.indice() + 3) % 4;
+        PestanaRadio::TODAS[indice]
+    }
+
+    pub fn siguiente(self) -> Self {
+        let indice = (self.indice() + 1) % 4;
+        PestanaRadio::TODAS[indice]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampoBusquedaRadio {
+    Nombre,
+    Pais,
+    Etiqueta,
+}
+
+impl CampoBusquedaRadio {
+    pub fn etiqueta(self) -> &'static str {
+        match self {
+            CampoBusquedaRadio::Nombre => "Nombre",
+            CampoBusquedaRadio::Pais => "País",
+            CampoBusquedaRadio::Etiqueta => "Etiqueta",
+        }
+    }
+
+    pub fn siguiente(self) -> Self {
+        match self {
+            CampoBusquedaRadio::Nombre => CampoBusquedaRadio::Pais,
+            CampoBusquedaRadio::Pais => CampoBusquedaRadio::Etiqueta,
+            CampoBusquedaRadio::Etiqueta => CampoBusquedaRadio::Nombre,
+        }
+    }
+
+    pub fn anterior(self) -> Self {
+        match self {
+            CampoBusquedaRadio::Nombre => CampoBusquedaRadio::Etiqueta,
+            CampoBusquedaRadio::Pais => CampoBusquedaRadio::Nombre,
+            CampoBusquedaRadio::Etiqueta => CampoBusquedaRadio::Pais,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BusquedaRadio {
+    pub nombre: String,
+    pub pais: String,
+    pub etiqueta: String,
+    pub campo: Option<CampoBusquedaRadio>,
+    pub resultados: Vec<EmisoraDirectorio>,
+    pub buscando: bool,
+    pub aviso: Option<String>,
+}
+
+impl BusquedaRadio {
+    pub fn clave(&self) -> String {
+        radiobrowser::clave_busqueda(&self.nombre, &self.pais, &self.etiqueta)
+    }
+
+    pub fn valor_mut(&mut self, campo: CampoBusquedaRadio) -> &mut String {
+        match campo {
+            CampoBusquedaRadio::Nombre => &mut self.nombre,
+            CampoBusquedaRadio::Pais => &mut self.pais,
+            CampoBusquedaRadio::Etiqueta => &mut self.etiqueta,
+        }
+    }
+
+    pub fn valor(&self, campo: CampoBusquedaRadio) -> &str {
+        match campo {
+            CampoBusquedaRadio::Nombre => &self.nombre,
+            CampoBusquedaRadio::Pais => &self.pais,
+            CampoBusquedaRadio::Etiqueta => &self.etiqueta,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CampoDialogo {
+    pub etiqueta: String,
+    pub valor: String,
+    pub pista: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialogo {
     Confirmacion {
@@ -122,6 +268,13 @@ pub enum Dialogo {
     Texto {
         titulo: String,
         valor: String,
+        accion: AccionDialogo,
+    },
+    Formulario {
+        titulo: String,
+        campos: Vec<CampoDialogo>,
+        enfocado: usize,
+        error: Option<String>,
         accion: AccionDialogo,
     },
     Selector {
@@ -153,6 +306,15 @@ pub enum AccionDialogo {
         nombre_fichero: String,
     },
     VaciarCola,
+    NuevaEmisora,
+    EditarEmisora {
+        id: i64,
+    },
+    EliminarEmisora {
+        id: i64,
+    },
+    ImportarRadio,
+    ExportarRadioConfirmado,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +390,8 @@ enum Contexto {
     Pistas { ids: Vec<i64>, indice: usize },
     Album { album_id: i64 },
     Artista { artista_id: i64 },
+    Emisora(EmisoraResumen),
+    ResultadoRadio(EmisoraDirectorio),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +476,15 @@ pub struct AppEstado {
     pub dt_frame: f32,
     ultimo_clic: Option<(Instant, u16, u16)>,
     pendiente_g: bool,
+    pub pestana_radio: PestanaRadio,
+    pub seleccion_radio: [usize; 4],
+    pub emisoras: Vec<EmisoraResumen>,
+    pub orden_emisoras: OrdenEmisoras,
+    pub orden_emisoras_descendente: bool,
+    pub busqueda_radio: BusquedaRadio,
+    pub radio_titulos: Vec<TituloEmisora>,
+    pub radio_titulos_ok: HashSet<i64>,
+    pub directorio: Option<ManejoDirectorio>,
 }
 
 impl AppEstado {
@@ -398,6 +571,15 @@ impl AppEstado {
             dt_frame: 0.033,
             ultimo_clic: None,
             pendiente_g: false,
+            pestana_radio: PestanaRadio::Favoritas,
+            seleccion_radio: [0; 4],
+            emisoras: Vec::new(),
+            orden_emisoras: OrdenEmisoras::Nombre,
+            orden_emisoras_descendente: false,
+            busqueda_radio: BusquedaRadio::default(),
+            radio_titulos: Vec::new(),
+            radio_titulos_ok: HashSet::new(),
+            directorio: None,
         }
     }
 
@@ -430,6 +612,15 @@ impl AppEstado {
             .unwrap_or(1.0)
             .clamp(0.25, 4.0);
         self.actualizar_paleta_visual();
+        Ok(())
+    }
+
+    pub fn aplicar_ajustes_radio(&mut self, conn: &Connection) -> anyhow::Result<()> {
+        if let Some(pestana) = consultas::ajustes::leer(conn, "radio_pestana")?
+            .and_then(|valor| PestanaRadio::desde_str(&valor))
+        {
+            self.pestana_radio = pestana;
+        }
         Ok(())
     }
 
@@ -729,8 +920,7 @@ impl AppEstado {
     pub fn recibir_colores(&mut self, album_id: i64, colores: String) {
         if self
             .estado_reproductor
-            .pista_actual
-            .as_ref()
+            .pista_actual()
             .is_some_and(|pista| pista.album_id == album_id)
         {
             self.colores_actuales = Some(colores);
@@ -740,8 +930,7 @@ impl AppEstado {
     fn actualizar_colores_album(&mut self, ctx: &ContextoApp<'_>) {
         let album_id = self
             .estado_reproductor
-            .pista_actual
-            .as_ref()
+            .pista_actual()
             .map(|pista| pista.album_id);
         if album_id == self.ultimo_album_colores {
             return;
@@ -757,8 +946,7 @@ impl AppEstado {
                 self.colores_actuales = None;
                 if let Some(ruta) = self
                     .estado_reproductor
-                    .pista_actual
-                    .as_ref()
+                    .pista_actual()
                     .and_then(|pista| pista.caratula_ruta.clone())
                 {
                     self.caratulas.solicitar_colores(album_id, &ruta);
@@ -795,6 +983,9 @@ impl AppEstado {
                 if self.tecla_en_visual(&tecla, ctx) {
                     return;
                 }
+                if self.tecla_en_radio(&tecla, ctx) {
+                    return;
+                }
                 if self.busqueda_enfocada && self.tecla_en_busqueda(&tecla) {
                     return;
                 }
@@ -820,11 +1011,28 @@ impl AppEstado {
                 }
             }
             AppEvento::Reproductor(estado) => {
+                let estado = *estado;
+                let titulo_anterior = self.estado_reproductor.titulo_icy.clone();
+                let emisora_anterior = self
+                    .estado_reproductor
+                    .emisora_actual()
+                    .map(|emisora| emisora.id);
                 self.estado_reproductor = estado;
                 if self.seleccion_cola >= self.estado_reproductor.cola.len() {
                     self.seleccion_cola = self.estado_reproductor.cola.len().saturating_sub(1);
                 }
                 self.actualizar_colores_album(ctx);
+                if self.vista == Vista::Radio
+                    && self.pestana_radio == PestanaRadio::Sonando
+                    && (self.estado_reproductor.titulo_icy != titulo_anterior
+                        || self
+                            .estado_reproductor
+                            .emisora_actual()
+                            .map(|emisora| emisora.id)
+                            != emisora_anterior)
+                {
+                    self.refrescar_titulos_radio(ctx);
+                }
             }
             AppEvento::Escaneo(evento) => self.manejar_escaneo(evento, ctx),
             AppEvento::TemaActualizado(paleta) => {
@@ -833,6 +1041,8 @@ impl AppEstado {
             AppEvento::Notificacion(nivel, texto) => self.notificar(nivel, texto),
             AppEvento::CaratulaLista(_album_id) => {}
             AppEvento::Scrobbling(estado) => self.estado_scrobbling = estado,
+            AppEvento::ResultadosRadio(clave) => self.manejar_resultados_radio(&clave, ctx),
+            AppEvento::LogoListo(emisora_id) => self.manejar_logo_listo(emisora_id, ctx),
             AppEvento::Salir => {
                 self.debe_salir = true;
             }
@@ -922,11 +1132,27 @@ impl AppEstado {
                 }
             }
             Accion::EnfocarBuscar => {
-                self.vista = Vista::Buscar;
-                self.pantalla = Pantalla::Lista;
-                self.busqueda_enfocada = true;
-                self.foco = Foco::Contenido;
+                if self.vista == Vista::Radio {
+                    self.foco = Foco::Contenido;
+                    self.enfocar_busqueda_radio(ctx);
+                } else {
+                    self.vista = Vista::Buscar;
+                    self.pantalla = Pantalla::Lista;
+                    self.busqueda_enfocada = true;
+                    self.foco = Foco::Contenido;
+                }
             }
+            Accion::PestanaAnterior => {
+                if self.vista == Vista::Radio {
+                    self.cambiar_pestana_radio(ctx, self.pestana_radio.anterior());
+                }
+            }
+            Accion::PestanaSiguiente => {
+                if self.vista == Vista::Radio {
+                    self.cambiar_pestana_radio(ctx, self.pestana_radio.siguiente());
+                }
+            }
+            Accion::BuscarTituloIcy => self.buscar_titulo_icy(ctx),
             Accion::Abajo if self.vista == Vista::Inicio => self.mover_inicio(ctx, 1, 0),
             Accion::Abajo => self.mover_seleccion(ctx, Eje::Vertical, 1),
             Accion::Arriba if self.vista == Vista::Inicio => self.mover_inicio(ctx, -1, 0),
@@ -966,6 +1192,15 @@ impl AppEstado {
                         OrdenAlbumes::TODAS[(posicion + 1) % OrdenAlbumes::TODAS.len()];
                     self.refrescar_albumes(ctx);
                 }
+                Vista::Radio => {
+                    let posicion = OrdenEmisoras::TODAS
+                        .iter()
+                        .position(|orden| *orden == self.orden_emisoras)
+                        .unwrap_or(0);
+                    self.orden_emisoras =
+                        OrdenEmisoras::TODAS[(posicion + 1) % OrdenEmisoras::TODAS.len()];
+                    self.refrescar_radio(ctx);
+                }
                 _ => {}
             },
             Accion::InvertirOrden => match self.vista {
@@ -977,10 +1212,19 @@ impl AppEstado {
                     self.orden_albumes_descendente = !self.orden_albumes_descendente;
                     self.refrescar_albumes(ctx);
                 }
+                Vista::Radio => {
+                    self.orden_emisoras_descendente = !self.orden_emisoras_descendente;
+                    self.refrescar_radio(ctx);
+                }
                 _ => {}
             },
             Accion::Abrir => {
-                if self.foco == Foco::Cola {
+                if self.vista == Vista::Radio
+                    && self.pestana_radio == PestanaRadio::Buscar
+                    && self.busqueda_radio.campo.is_some()
+                {
+                    self.lanzar_busqueda_radio(ctx);
+                } else if self.foco == Foco::Cola {
                     if self.seleccion_cola < self.estado_reproductor.cola.len() {
                         ctx.reproductor.enviar(ComandoReproductor::SaltarA {
                             posicion: self.seleccion_cola,
@@ -1018,14 +1262,25 @@ impl AppEstado {
                 });
             }
             Accion::NuevaPlaylist => {
-                self.dialogo = Some(Dialogo::Texto {
-                    titulo: "Nueva playlist".to_string(),
-                    valor: String::new(),
-                    accion: AccionDialogo::CrearPlaylist { anadir: Vec::new() },
-                });
+                if self.vista == Vista::Radio {
+                    self.nueva_emisora_dialogo();
+                } else {
+                    self.dialogo = Some(Dialogo::Texto {
+                        titulo: "Nueva playlist".to_string(),
+                        valor: String::new(),
+                        accion: AccionDialogo::CrearPlaylist { anadir: Vec::new() },
+                    });
+                }
             }
             Accion::RenombrarPlaylist => {
-                if let Some(playlist) = self.playlist_seleccionada() {
+                if self.vista == Vista::Radio {
+                    if let Some(emisora) = self
+                        .emisora_bajo_cursor()
+                        .or_else(|| self.estado_reproductor.emisora_actual().cloned())
+                    {
+                        self.editar_emisora_dialogo(ctx, emisora.id);
+                    }
+                } else if let Some(playlist) = self.playlist_seleccionada() {
                     self.dialogo = Some(Dialogo::Texto {
                         titulo: "Renombrar playlist".to_string(),
                         valor: playlist.nombre.clone(),
@@ -1034,7 +1289,11 @@ impl AppEstado {
                 }
             }
             Accion::EliminarPlaylist => {
-                if let Some(playlist) = self.playlist_seleccionada() {
+                if self.vista == Vista::Radio {
+                    if let Some(emisora) = self.emisora_bajo_cursor() {
+                        self.eliminar_emisora_dialogo(ctx, emisora.id);
+                    }
+                } else if let Some(playlist) = self.playlist_seleccionada() {
                     self.dialogo = Some(Dialogo::Confirmacion {
                         titulo: "Eliminar playlist".to_string(),
                         mensaje: format!(
@@ -1046,7 +1305,9 @@ impl AppEstado {
                 }
             }
             Accion::ExportarPlaylist => {
-                if let Some(playlist) = self.playlist_seleccionada() {
+                if self.vista == Vista::Radio {
+                    self.exportar_radio(ctx, false);
+                } else if let Some(playlist) = self.playlist_seleccionada() {
                     self.dialogo = Some(Dialogo::Texto {
                         titulo: "Exportar a M3U8 (nombre de fichero)".to_string(),
                         valor: format!("{}.m3u8", playlist.nombre),
@@ -1061,11 +1322,15 @@ impl AppEstado {
                 }
             }
             Accion::ImportarPlaylist => {
-                self.dialogo = Some(Dialogo::Texto {
-                    titulo: "Importar M3U/M3U8 (ruta del fichero)".to_string(),
-                    valor: String::new(),
-                    accion: AccionDialogo::ImportarPlaylist,
-                });
+                if self.vista == Vista::Radio {
+                    self.importar_radio_dialogo();
+                } else {
+                    self.dialogo = Some(Dialogo::Texto {
+                        titulo: "Importar M3U/M3U8 (ruta del fichero)".to_string(),
+                        valor: String::new(),
+                        accion: AccionDialogo::ImportarPlaylist,
+                    });
+                }
             }
             Accion::AnadirPlaylist => self.abrir_selector_playlist(ctx),
             Accion::AlternarPausa => {
@@ -1249,6 +1514,19 @@ impl AppEstado {
                     + self.resultados.albumes.len()
                     + self.resultados.pistas.len()
             }
+            (Vista::Radio, _) => match self.pestana_radio {
+                PestanaRadio::Favoritas | PestanaRadio::Todas => self.emisoras.len(),
+                PestanaRadio::Buscar => {
+                    if self.busqueda_radio.campo.is_some() {
+                        0
+                    } else if self.config.radio.directorio {
+                        self.busqueda_radio.resultados.len()
+                    } else {
+                        self.emisoras.len()
+                    }
+                }
+                PestanaRadio::Sonando => self.radio_titulos.len(),
+            },
             _ => 0,
         }
     }
@@ -1376,14 +1654,48 @@ impl AppEstado {
         }
         match self.contexto() {
             Contexto::Pistas { ids, indice } => {
-                ctx.reproductor.enviar(ComandoReproductor::ReemplazarCola {
-                    pistas: ids,
-                    indice,
-                });
+                let elementos = self.elementos_pistas(ctx, &ids);
+                if elementos.is_empty() {
+                    return;
+                }
+                let indice = indice.min(elementos.len() - 1);
+                ctx.reproductor
+                    .enviar(ComandoReproductor::ReemplazarCola { elementos, indice });
             }
             Contexto::Album { album_id } => self.abrir_album(ctx, album_id),
             Contexto::Artista { artista_id } => self.abrir_artista(ctx, artista_id),
+            Contexto::Emisora(emisora) => {
+                let id = emisora.id;
+                ctx.reproductor.enviar(ComandoReproductor::ReemplazarCola {
+                    elementos: vec![ElementoCola::Emisora(emisora)],
+                    indice: 0,
+                });
+                self.enviar_click_emisora(ctx, id);
+            }
+            Contexto::ResultadoRadio(resultado) => {
+                if let Some(emisora) = self.guardar_resultado_radio(ctx, &resultado) {
+                    let id = emisora.id;
+                    ctx.reproductor.enviar(ComandoReproductor::ReemplazarCola {
+                        elementos: vec![ElementoCola::Emisora(emisora)],
+                        indice: 0,
+                    });
+                    self.enviar_click_emisora(ctx, id);
+                }
+            }
             Contexto::Ninguno => {}
+        }
+    }
+
+    fn elementos_pistas(&mut self, ctx: &ContextoApp<'_>, ids: &[i64]) -> Vec<ElementoCola> {
+        match consultas::pistas_resumen_por_ids(ctx.conn, ids) {
+            Ok(pistas) => pistas.into_iter().map(ElementoCola::Pista).collect(),
+            Err(error) => {
+                self.notificar(
+                    NivelAviso::Error,
+                    format!("No se pudieron leer las pistas: {error:#}"),
+                );
+                Vec::new()
+            }
         }
     }
 
@@ -1506,32 +1818,68 @@ impl AppEstado {
                 let indice = self.seleccion.min(pistas.len() - 1);
                 Contexto::Pistas { ids, indice }
             }
+            (Vista::Radio, _) => match self.pestana_radio {
+                PestanaRadio::Favoritas | PestanaRadio::Todas => self
+                    .emisoras
+                    .get(self.seleccion)
+                    .cloned()
+                    .map(Contexto::Emisora)
+                    .unwrap_or(Contexto::Ninguno),
+                PestanaRadio::Buscar => {
+                    if self.busqueda_radio.campo.is_some() {
+                        return Contexto::Ninguno;
+                    }
+                    if self.config.radio.directorio {
+                        self.busqueda_radio
+                            .resultados
+                            .get(self.seleccion)
+                            .cloned()
+                            .map(Contexto::ResultadoRadio)
+                            .unwrap_or(Contexto::Ninguno)
+                    } else {
+                        self.emisoras
+                            .get(self.seleccion)
+                            .cloned()
+                            .map(Contexto::Emisora)
+                            .unwrap_or(Contexto::Ninguno)
+                    }
+                }
+                PestanaRadio::Sonando => Contexto::Ninguno,
+            },
             _ => Contexto::Ninguno,
         }
     }
 
     fn anadir_seleccion(&mut self, ctx: &ContextoApp<'_>, a_continuacion: bool) {
-        let pistas = match self.contexto() {
+        let elementos = match self.contexto() {
             Contexto::Pistas { ids, indice } => ids
                 .get(indice)
                 .copied()
-                .map(|id| vec![id])
+                .map(|id| self.elementos_pistas(ctx, &[id]))
                 .unwrap_or_default(),
             Contexto::Album { album_id } => {
-                self.cargar_ids(&consultas::ids_pistas_album(ctx.conn, album_id))
+                let ids = self.cargar_ids(&consultas::ids_pistas_album(ctx.conn, album_id));
+                self.elementos_pistas(ctx, &ids)
             }
             Contexto::Artista { artista_id } => {
-                self.cargar_ids(&consultas::ids_pistas_artista(ctx.conn, artista_id))
+                let ids = self.cargar_ids(&consultas::ids_pistas_artista(ctx.conn, artista_id));
+                self.elementos_pistas(ctx, &ids)
             }
+            Contexto::Emisora(emisora) => vec![ElementoCola::Emisora(emisora)],
+            Contexto::ResultadoRadio(resultado) => self
+                .guardar_resultado_radio(ctx, &resultado)
+                .map(ElementoCola::Emisora)
+                .into_iter()
+                .collect(),
             Contexto::Ninguno => Vec::new(),
         };
-        if pistas.is_empty() {
+        if elementos.is_empty() {
             return;
         }
         let comando = if a_continuacion {
-            ComandoReproductor::ReproducirSiguiente { pistas }
+            ComandoReproductor::ReproducirSiguiente { elementos }
         } else {
-            ComandoReproductor::AnadirAlFinal { pistas }
+            ComandoReproductor::AnadirAlFinal { elementos }
         };
         ctx.reproductor.enviar(comando);
     }
@@ -1776,6 +2124,7 @@ impl AppEstado {
             Contexto::Artista { artista_id } => {
                 self.cargar_ids(&consultas::ids_pistas_artista(ctx.conn, artista_id))
             }
+            Contexto::Emisora(_) | Contexto::ResultadoRadio(_) => Vec::new(),
             Contexto::Ninguno => {
                 if self.vista == Vista::Playlists && self.pantalla == Pantalla::Lista {
                     if let Some(playlist) = self.playlists.get(self.seleccion) {
@@ -1796,6 +2145,91 @@ impl AppEstado {
                     Vec::new()
                 }
             }
+        }
+    }
+
+    fn validar_formulario(
+        &self,
+        accion: &AccionDialogo,
+        campos: &[CampoDialogo],
+        ctx: &ContextoApp<'_>,
+    ) -> Result<(), String> {
+        match accion {
+            AccionDialogo::NuevaEmisora => {
+                self.validar_emisora(ctx, None, &campos[0].valor, &campos[1].valor)
+            }
+            AccionDialogo::EditarEmisora { id } => {
+                self.validar_emisora(ctx, Some(*id), &campos[0].valor, &campos[1].valor)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn validar_emisora(
+        &self,
+        ctx: &ContextoApp<'_>,
+        id: Option<i64>,
+        nombre: &str,
+        url: &str,
+    ) -> Result<(), String> {
+        if !crate::radio::validar_nombre(nombre) {
+            return Err("El nombre debe tener entre 1 y 100 caracteres".to_string());
+        }
+        if !crate::radio::validar_url(url) {
+            return Err("La URL debe empezar por http:// o https:// y tener host".to_string());
+        }
+        let normalizada = consultas::emisoras::normalizar_url(url);
+        if let Ok(Some(otra)) = consultas::emisoras::por_url(ctx.conn, &normalizada)
+            && Some(otra.id) != id
+        {
+            return Err("Ya existe una emisora con esa URL".to_string());
+        }
+        Ok(())
+    }
+
+    fn ejecutar_formulario(
+        &mut self,
+        accion: &AccionDialogo,
+        campos: Vec<CampoDialogo>,
+        ctx: &ContextoApp<'_>,
+    ) {
+        match accion {
+            AccionDialogo::NuevaEmisora => {
+                let nombre = campos[0].valor.trim().to_string();
+                let url = consultas::emisoras::normalizar_url(&campos[1].valor);
+                let nueva = NuevaEmisora {
+                    nombre: nombre.clone(),
+                    url,
+                    ..NuevaEmisora::default()
+                };
+                match consultas::emisoras::crear(ctx.conn, &nueva) {
+                    Ok(_) => {
+                        self.refrescar_radio(ctx);
+                        self.notificar(NivelAviso::Info, format!("Emisora «{nombre}» añadida"));
+                    }
+                    Err(error) => self.notificar(
+                        NivelAviso::Error,
+                        format!("No se pudo crear la emisora: {error:#}"),
+                    ),
+                }
+            }
+            AccionDialogo::EditarEmisora { id } => {
+                let nombre = campos[0].valor.trim().to_string();
+                let url = campos[1].valor.trim().to_string();
+                let pagina_web = campos[2].valor.trim();
+                let pagina_web = (!pagina_web.is_empty()).then_some(pagina_web);
+                match consultas::emisoras::editar(ctx.conn, *id, &nombre, &url, pagina_web) {
+                    Ok(()) => {
+                        self.refrescar_radio(ctx);
+                        self.notificar(NivelAviso::Info, "Emisora actualizada");
+                    }
+                    Err(error) => self.notificar(
+                        NivelAviso::Error,
+                        format!("No se pudo editar la emisora: {error:#}"),
+                    ),
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1852,6 +2286,89 @@ impl AppEstado {
                     self.dialogo = Some(Dialogo::Texto {
                         titulo,
                         valor,
+                        accion,
+                    });
+                }
+            },
+            Dialogo::Formulario {
+                titulo,
+                mut campos,
+                mut enfocado,
+                mut error,
+                accion,
+            } => match tecla.code {
+                KeyCode::Esc => {}
+                KeyCode::Tab | KeyCode::Down => {
+                    let total = campos.len().max(1);
+                    enfocado = (enfocado + 1) % total;
+                    error = None;
+                    self.dialogo = Some(Dialogo::Formulario {
+                        titulo,
+                        campos,
+                        enfocado,
+                        error,
+                        accion,
+                    });
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    let total = campos.len().max(1);
+                    enfocado = (enfocado + total - 1) % total;
+                    error = None;
+                    self.dialogo = Some(Dialogo::Formulario {
+                        titulo,
+                        campos,
+                        enfocado,
+                        error,
+                        accion,
+                    });
+                }
+                KeyCode::Enter => match self.validar_formulario(&accion, &campos, ctx) {
+                    Ok(()) => self.ejecutar_formulario(&accion, campos, ctx),
+                    Err(mensaje) => {
+                        error = Some(mensaje);
+                        self.dialogo = Some(Dialogo::Formulario {
+                            titulo,
+                            campos,
+                            enfocado,
+                            error,
+                            accion,
+                        });
+                    }
+                },
+                KeyCode::Backspace => {
+                    if let Some(campo) = campos.get_mut(enfocado) {
+                        campo.valor.pop();
+                    }
+                    error = None;
+                    self.dialogo = Some(Dialogo::Formulario {
+                        titulo,
+                        campos,
+                        enfocado,
+                        error,
+                        accion,
+                    });
+                }
+                KeyCode::Char(caracter) if !tecla.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if let Some(campo) = campos.get_mut(enfocado)
+                        && campo.valor.chars().count() < 300
+                    {
+                        campo.valor.push(caracter);
+                    }
+                    error = None;
+                    self.dialogo = Some(Dialogo::Formulario {
+                        titulo,
+                        campos,
+                        enfocado,
+                        error,
+                        accion,
+                    });
+                }
+                _ => {
+                    self.dialogo = Some(Dialogo::Formulario {
+                        titulo,
+                        campos,
+                        enfocado,
+                        error,
                         accion,
                     });
                 }
@@ -2079,6 +2596,37 @@ impl AppEstado {
             AccionDialogo::VaciarCola => {
                 ctx.reproductor.enviar(ComandoReproductor::VaciarCola);
             }
+            AccionDialogo::NuevaEmisora | AccionDialogo::EditarEmisora { .. } => {}
+            AccionDialogo::EliminarEmisora { id } => {
+                self.quitar_emisora_de_cola(ctx, id);
+                match consultas::emisoras::eliminar(ctx.conn, id) {
+                    Ok(()) => {
+                        self.refrescar_radio(ctx);
+                        self.notificar(NivelAviso::Info, "Emisora eliminada");
+                    }
+                    Err(error) => self.notificar(
+                        NivelAviso::Error,
+                        format!("No se pudo eliminar la emisora: {error:#}"),
+                    ),
+                }
+            }
+            AccionDialogo::ImportarRadio => {
+                let bruto = valor.trim();
+                if bruto.is_empty() {
+                    return;
+                }
+                let ruta = crate::config::expandir_ruta(bruto);
+                match crate::radio::importar_listas(ctx.conn, &ruta) {
+                    Ok(resumen) => {
+                        self.refrescar_radio(ctx);
+                        self.notificar(NivelAviso::Info, resumen.mensaje());
+                    }
+                    Err(error) => {
+                        self.notificar(NivelAviso::Error, format!("No se pudo importar: {error:#}"))
+                    }
+                }
+            }
+            AccionDialogo::ExportarRadioConfirmado => self.exportar_radio(ctx, true),
         }
     }
 
@@ -2106,10 +2654,7 @@ impl AppEstado {
     }
 
     fn pista_actual_id(&self) -> Option<i64> {
-        self.estado_reproductor
-            .pista_actual
-            .as_ref()
-            .map(|pista| pista.id)
+        self.estado_reproductor.pista_actual().map(|pista| pista.id)
     }
 
     fn pista_bajo_cursor(&self) -> Option<i64> {
@@ -2118,7 +2663,7 @@ impl AppEstado {
                 .estado_reproductor
                 .cola
                 .get(self.seleccion_cola)
-                .map(|pista| pista.id)
+                .and_then(|elemento| elemento.pista_id())
                 .or_else(|| self.pista_actual_id());
         }
         let seleccionada = match self.contexto() {
@@ -2129,6 +2674,27 @@ impl AppEstado {
     }
 
     fn alternar_favorita(&mut self, ctx: &ContextoApp<'_>) {
+        if self.vista == Vista::Radio {
+            if let Some(resultado) = self.resultado_bajo_cursor() {
+                if let Some(emisora) = self.guardar_resultado_radio(ctx, &resultado) {
+                    self.alternar_favorita_emisora(ctx, emisora.id);
+                }
+                return;
+            }
+            if let Some(emisora) = self
+                .emisora_bajo_cursor()
+                .or_else(|| self.estado_reproductor.emisora_actual().cloned())
+            {
+                self.alternar_favorita_emisora(ctx, emisora.id);
+                return;
+            }
+        } else if self.estado_reproductor.es_emisora()
+            && self.pista_bajo_cursor().is_none()
+            && let Some(emisora) = self.estado_reproductor.emisora_actual().cloned()
+        {
+            self.alternar_favorita_emisora(ctx, emisora.id);
+            return;
+        }
         let Some(pista_id) = self.pista_bajo_cursor() else {
             return;
         };
@@ -2234,6 +2800,7 @@ impl AppEstado {
             Vista::Albumes => self.refrescar_albumes(ctx),
             Vista::Pistas => self.pagina_nueva(ctx),
             Vista::Playlists => self.refrescar_playlists(ctx),
+            Vista::Radio => self.refrescar_radio(ctx),
             Vista::Buscar | Vista::Visual => {}
         }
     }
@@ -2291,6 +2858,507 @@ impl AppEstado {
     pub fn refrescar_contadores(&mut self, ctx: &ContextoApp<'_>) {
         if let Ok(total) = consultas::contar_pistas(ctx.conn) {
             self.total_pistas = total;
+        }
+    }
+
+    // ---------- Radio ----------
+
+    pub fn refrescar_radio(&mut self, ctx: &ContextoApp<'_>) {
+        self.solicitar_logos_pendientes();
+        if self.pestana_radio == PestanaRadio::Sonando {
+            self.refrescar_titulos_radio(ctx);
+            self.seleccion = self
+                .seleccion
+                .min(self.radio_titulos.len().saturating_sub(1));
+            return;
+        }
+        if self.pestana_radio == PestanaRadio::Buscar {
+            if !self.config.radio.directorio {
+                let texto = self.busqueda_radio.nombre.clone();
+                match consultas::emisoras::buscar_local(ctx.conn, &texto, false) {
+                    Ok(emisoras) => self.emisoras = emisoras,
+                    Err(error) => self.notificar(
+                        NivelAviso::Error,
+                        format!("No se pudo buscar en las emisoras: {error:#}"),
+                    ),
+                }
+            }
+            self.seleccion = self
+                .seleccion
+                .min(self.total_seleccionable().saturating_sub(1));
+            return;
+        }
+        let solo_favoritas = self.pestana_radio == PestanaRadio::Favoritas;
+        match consultas::emisoras::listar(
+            ctx.conn,
+            solo_favoritas,
+            self.orden_emisoras,
+            self.orden_emisoras_descendente,
+        ) {
+            Ok(emisoras) => self.emisoras = emisoras,
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron listar las emisoras: {error:#}"),
+            ),
+        }
+        self.seleccion = self.seleccion.min(self.emisoras.len().saturating_sub(1));
+    }
+
+    fn refrescar_titulos_radio(&mut self, ctx: &ContextoApp<'_>) {
+        self.radio_titulos.clear();
+        self.radio_titulos_ok.clear();
+        let Some(emisora) = self.estado_reproductor.emisora_actual().cloned() else {
+            return;
+        };
+        match consultas::titulos_emisora::listar(ctx.conn, emisora.id, 50) {
+            Ok(titulos) => self.radio_titulos = titulos,
+            Err(error) => {
+                tracing::warn!("no se pudieron leer los títulos de la emisora: {error:#}");
+                return;
+            }
+        }
+        for titulo in &self.radio_titulos {
+            let Some(parsed) = icy::parsear(&titulo.titulo, &emisora.nombre) else {
+                continue;
+            };
+            let Some(artista) = parsed.artista else {
+                continue;
+            };
+            if consultas::existe_pista_por_artista_titulo(ctx.conn, &artista, &parsed.titulo)
+                .unwrap_or(false)
+            {
+                self.radio_titulos_ok.insert(titulo.id);
+            }
+        }
+    }
+
+    fn solicitar_logos_pendientes(&mut self) {
+        if !self.config.radio.logos {
+            return;
+        }
+        let Some(directorio) = self.directorio.as_ref() else {
+            return;
+        };
+        let pendientes: Vec<(i64, String)> = self
+            .emisoras
+            .iter()
+            .filter_map(|emisora| match (&emisora.logo_ruta, &emisora.logo_url) {
+                (None, Some(url)) if !url.trim().is_empty() => Some((emisora.id, url.clone())),
+                _ => None,
+            })
+            .collect();
+        for (emisora_id, url) in pendientes {
+            directorio.enviar(ComandoDirectorio::Logo { emisora_id, url });
+        }
+    }
+
+    fn emisora_bajo_cursor(&self) -> Option<EmisoraResumen> {
+        if self.vista != Vista::Radio {
+            return None;
+        }
+        match self.pestana_radio {
+            PestanaRadio::Favoritas | PestanaRadio::Todas => {
+                self.emisoras.get(self.seleccion).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    fn resultado_bajo_cursor(&self) -> Option<EmisoraDirectorio> {
+        if self.vista != Vista::Radio
+            || self.pestana_radio != PestanaRadio::Buscar
+            || self.busqueda_radio.campo.is_some()
+        {
+            return None;
+        }
+        if !self.config.radio.directorio {
+            return None;
+        }
+        self.busqueda_radio.resultados.get(self.seleccion).cloned()
+    }
+
+    fn cambiar_pestana_radio(&mut self, ctx: &ContextoApp<'_>, nueva: PestanaRadio) {
+        self.seleccion_radio[self.pestana_radio.indice()] = self.seleccion;
+        self.pestana_radio = nueva;
+        self.seleccion = self.seleccion_radio[nueva.indice()];
+        if nueva == PestanaRadio::Buscar && self.busqueda_radio.campo.is_none() {
+            self.busqueda_radio.campo = Some(CampoBusquedaRadio::Nombre);
+        } else if nueva != PestanaRadio::Buscar {
+            self.busqueda_radio.campo = None;
+        }
+        self.guardar_ajuste(ctx, "radio_pestana", nueva.como_str());
+        self.refrescar_radio(ctx);
+    }
+
+    fn enfocar_busqueda_radio(&mut self, ctx: &ContextoApp<'_>) {
+        self.pestana_radio = PestanaRadio::Buscar;
+        self.busqueda_radio.campo = Some(CampoBusquedaRadio::Nombre);
+        self.guardar_ajuste(ctx, "radio_pestana", PestanaRadio::Buscar.como_str());
+        self.refrescar_radio(ctx);
+    }
+
+    fn guardar_resultado_radio(
+        &mut self,
+        ctx: &ContextoApp<'_>,
+        resultado: &EmisoraDirectorio,
+    ) -> Option<EmisoraResumen> {
+        let nombre = resultado.nombre_limpio();
+        let url = crate::radio::limpiar_texto(resultado.url());
+        if nombre.is_empty() || !crate::radio::validar_url(&url) {
+            self.notificar(
+                NivelAviso::Error,
+                "La emisora no tiene nombre o URL válidos",
+            );
+            return None;
+        }
+        let url = consultas::emisoras::normalizar_url(&url);
+        let uuid = resultado.uuid.trim();
+        if !uuid.is_empty()
+            && let Ok(Some(emisora)) = consultas::emisoras::por_uuid(ctx.conn, uuid)
+        {
+            return Some(emisora.a_resumen());
+        }
+        if let Ok(Some(emisora)) = consultas::emisoras::por_url(ctx.conn, &url) {
+            return Some(emisora.a_resumen());
+        }
+        let nueva = NuevaEmisora {
+            nombre: nombre.clone(),
+            url,
+            pagina_web: Some(resultado.pagina_web.clone()).filter(|v| !v.trim().is_empty()),
+            pais: resultado.pais_limpio(),
+            etiquetas: Some(crate::radio::limpiar_texto(&resultado.etiquetas))
+                .filter(|v| !v.is_empty()),
+            codec: Some(resultado.codec.clone()).filter(|v| !v.trim().is_empty()),
+            bitrate_kbps: (resultado.bitrate > 0).then_some(resultado.bitrate),
+            logo_url: resultado.url_logo(),
+            radiobrowser_uuid: (!uuid.is_empty()).then(|| uuid.to_string()),
+            favorita: false,
+        };
+        match consultas::emisoras::crear(ctx.conn, &nueva) {
+            Ok(id) => {
+                self.notificar(NivelAviso::Info, format!("Emisora «{nombre}» añadida"));
+                consultas::emisoras::por_id(ctx.conn, id)
+                    .ok()
+                    .flatten()
+                    .map(|emisora| emisora.a_resumen())
+            }
+            Err(error) => {
+                self.notificar(
+                    NivelAviso::Error,
+                    format!("No se pudo añadir la emisora: {error:#}"),
+                );
+                None
+            }
+        }
+    }
+
+    fn lanzar_busqueda_radio(&mut self, ctx: &ContextoApp<'_>) {
+        self.busqueda_radio.campo = None;
+        if !self.config.radio.directorio {
+            let texto = self.busqueda_radio.nombre.clone();
+            match consultas::emisoras::buscar_local(ctx.conn, &texto, false) {
+                Ok(emisoras) => {
+                    self.emisoras = emisoras;
+                    self.seleccion = 0;
+                }
+                Err(error) => self.notificar(
+                    NivelAviso::Error,
+                    format!("No se pudo buscar en las emisoras: {error:#}"),
+                ),
+            }
+            return;
+        }
+        let clave = self.busqueda_radio.clave();
+        if let Ok(Some((json, obtenido_en))) = consultas::busquedas_radio::leer(ctx.conn, &clave)
+            && cache_vigente(&obtenido_en)
+        {
+            self.cargar_resultados_radio(&clave, &json, aviso_cache(&obtenido_en));
+            return;
+        }
+        let Some(directorio) = self.directorio.as_ref() else {
+            self.notificar(NivelAviso::Aviso, "El directorio de radio está desactivado");
+            return;
+        };
+        self.busqueda_radio.resultados.clear();
+        self.busqueda_radio.buscando = true;
+        self.busqueda_radio.aviso = None;
+        self.seleccion = 0;
+        let enviado = directorio.enviar(ComandoDirectorio::Buscar {
+            clave,
+            nombre: self.busqueda_radio.nombre.clone(),
+            pais: self.busqueda_radio.pais.clone(),
+            etiqueta: self.busqueda_radio.etiqueta.clone(),
+        });
+        if !enviado {
+            self.busqueda_radio.buscando = false;
+            self.notificar(
+                NivelAviso::Error,
+                "No se pudo consultar el directorio de radio",
+            );
+        }
+    }
+
+    fn cargar_resultados_radio(&mut self, clave: &str, json: &str, aviso: Option<String>) {
+        if clave != self.busqueda_radio.clave() {
+            return;
+        }
+        match serde_json::from_str::<Vec<EmisoraDirectorio>>(json) {
+            Ok(resultados) => {
+                self.busqueda_radio.resultados = resultados;
+                self.busqueda_radio.buscando = false;
+                self.busqueda_radio.aviso = aviso;
+                self.seleccion_radio[PestanaRadio::Buscar.indice()] = 0;
+                self.seleccion = 0;
+            }
+            Err(error) => {
+                tracing::warn!("resultados de radio ilegibles: {error}");
+                self.busqueda_radio.buscando = false;
+                self.busqueda_radio.aviso = Some("resultados ilegibles".to_string());
+            }
+        }
+    }
+
+    fn manejar_resultados_radio(&mut self, clave: &str, ctx: &ContextoApp<'_>) {
+        if clave != self.busqueda_radio.clave() {
+            return;
+        }
+        match consultas::busquedas_radio::leer(ctx.conn, clave) {
+            Ok(Some((json, obtenido_en))) => {
+                let aviso = aviso_cache(&obtenido_en);
+                self.cargar_resultados_radio(clave, &json, aviso);
+            }
+            Ok(None) => {
+                self.busqueda_radio.buscando = false;
+            }
+            Err(error) => {
+                tracing::warn!("no se pudieron leer los resultados de radio: {error:#}");
+                self.busqueda_radio.buscando = false;
+            }
+        }
+    }
+
+    fn manejar_logo_listo(&mut self, _emisora_id: i64, ctx: &ContextoApp<'_>) {
+        self.refrescar_radio(ctx);
+    }
+
+    fn buscar_titulo_icy(&mut self, ctx: &ContextoApp<'_>) {
+        let texto = if self.vista == Vista::Radio && self.pestana_radio == PestanaRadio::Sonando {
+            self.radio_titulos
+                .get(self.seleccion)
+                .map(|titulo| titulo.titulo.clone())
+        } else {
+            self.estado_reproductor.titulo_icy.clone()
+        };
+        let Some(texto) = texto.filter(|texto| !texto.trim().is_empty()) else {
+            self.notificar(NivelAviso::Info, "No hay ningún título ICY que buscar");
+            return;
+        };
+        let consulta = icy::parsear(&texto, "")
+            .map(|parsed| match parsed.artista {
+                Some(artista) => format!("{artista} {}", parsed.titulo),
+                None => parsed.titulo,
+            })
+            .unwrap_or(texto);
+        self.vista = Vista::Buscar;
+        self.pantalla = Pantalla::Lista;
+        self.foco = Foco::Contenido;
+        self.busqueda_enfocada = true;
+        self.busqueda = consulta;
+        self.ejecutar_busqueda(ctx);
+    }
+
+    fn tecla_en_radio(&mut self, tecla: &KeyEvent, ctx: &ContextoApp<'_>) -> bool {
+        if self.vista != Vista::Radio
+            || self.pestana_radio != PestanaRadio::Buscar
+            || self.busqueda_radio.campo.is_none()
+        {
+            return false;
+        }
+        let campo = self
+            .busqueda_radio
+            .campo
+            .unwrap_or(CampoBusquedaRadio::Nombre);
+        match tecla.code {
+            KeyCode::Char(caracter)
+                if !caracter.is_control() && !tecla.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let valor = self.busqueda_radio.valor_mut(campo);
+                if valor.chars().count() < 80 {
+                    valor.push(caracter);
+                }
+                true
+            }
+            KeyCode::Backspace => {
+                self.busqueda_radio.valor_mut(campo).pop();
+                true
+            }
+            KeyCode::Tab => {
+                self.busqueda_radio.campo = Some(campo.siguiente());
+                true
+            }
+            KeyCode::BackTab => {
+                self.busqueda_radio.campo = Some(campo.anterior());
+                true
+            }
+            KeyCode::Enter => {
+                self.lanzar_busqueda_radio(ctx);
+                true
+            }
+            KeyCode::Esc => {
+                self.busqueda_radio.campo = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn alternar_favorita_emisora(&mut self, ctx: &ContextoApp<'_>, emisora_id: i64) {
+        match consultas::emisoras::alternar_favorita(ctx.conn, emisora_id) {
+            Ok(favorita) => {
+                self.refrescar_radio(ctx);
+                self.notificar(
+                    NivelAviso::Info,
+                    if favorita {
+                        "Emisora marcada como favorita"
+                    } else {
+                        "Emisora quitada de favoritas"
+                    },
+                );
+            }
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudo cambiar la favorita: {error:#}"),
+            ),
+        }
+    }
+
+    fn nueva_emisora_dialogo(&mut self) {
+        self.dialogo = Some(Dialogo::Formulario {
+            titulo: "Nueva emisora".to_string(),
+            campos: vec![
+                CampoDialogo {
+                    etiqueta: "Nombre".to_string(),
+                    valor: String::new(),
+                    pista: None,
+                },
+                CampoDialogo {
+                    etiqueta: "URL".to_string(),
+                    valor: String::new(),
+                    pista: Some("https://…".to_string()),
+                },
+            ],
+            enfocado: 0,
+            error: None,
+            accion: AccionDialogo::NuevaEmisora,
+        });
+    }
+
+    fn editar_emisora_dialogo(&mut self, ctx: &ContextoApp<'_>, id: i64) {
+        let Ok(Some(emisora)) = consultas::emisoras::por_id(ctx.conn, id) else {
+            self.notificar(NivelAviso::Aviso, "La emisora ya no existe");
+            return;
+        };
+        self.dialogo = Some(Dialogo::Formulario {
+            titulo: "Editar emisora".to_string(),
+            campos: vec![
+                CampoDialogo {
+                    etiqueta: "Nombre".to_string(),
+                    valor: emisora.nombre,
+                    pista: None,
+                },
+                CampoDialogo {
+                    etiqueta: "URL".to_string(),
+                    valor: emisora.url,
+                    pista: None,
+                },
+                CampoDialogo {
+                    etiqueta: "Página web".to_string(),
+                    valor: emisora.pagina_web.unwrap_or_default(),
+                    pista: Some("opcional".to_string()),
+                },
+            ],
+            enfocado: 0,
+            error: None,
+            accion: AccionDialogo::EditarEmisora { id },
+        });
+    }
+
+    fn eliminar_emisora_dialogo(&mut self, ctx: &ContextoApp<'_>, id: i64) {
+        let nombre = consultas::emisoras::por_id(ctx.conn, id)
+            .ok()
+            .flatten()
+            .map(|emisora| emisora.nombre)
+            .unwrap_or_else(|| "la emisora".to_string());
+        self.dialogo = Some(Dialogo::Confirmacion {
+            titulo: "Eliminar emisora".to_string(),
+            mensaje: format!(
+                "¿Eliminar «{nombre}»? Se borrarán también sus títulos, su historial y su presencia en la cola."
+            ),
+            accion: AccionDialogo::EliminarEmisora { id },
+        });
+    }
+
+    fn importar_radio_dialogo(&mut self) {
+        let valor = self
+            .config
+            .carpeta_playlists()
+            .to_string_lossy()
+            .to_string();
+        self.dialogo = Some(Dialogo::Texto {
+            titulo: "Importar PLS/M3U (ruta del fichero)".to_string(),
+            valor,
+            accion: AccionDialogo::ImportarRadio,
+        });
+    }
+
+    fn exportar_radio(&mut self, ctx: &ContextoApp<'_>, confirmado: bool) {
+        let carpeta = self.config.carpeta_playlists();
+        let ruta = carpeta.join(format!("{}.m3u8", crate::radio::NOMBRE_EXPORTACION));
+        if ruta.exists() && !confirmado {
+            self.dialogo = Some(Dialogo::Confirmacion {
+                titulo: "Sobrescribir exportación".to_string(),
+                mensaje: format!("{} ya existe. ¿Sobrescribirlo?", ruta.display()),
+                accion: AccionDialogo::ExportarRadioConfirmado,
+            });
+            return;
+        }
+        match crate::radio::exportar_favoritas(ctx.conn, &carpeta, crate::radio::NOMBRE_EXPORTACION)
+        {
+            Ok(ruta) => self.notificar(
+                NivelAviso::Info,
+                format!("Emisoras favoritas exportadas a {}", ruta.display()),
+            ),
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron exportar las emisoras: {error:#}"),
+            ),
+        }
+    }
+
+    fn quitar_emisora_de_cola(&self, ctx: &ContextoApp<'_>, emisora_id: i64) {
+        let posiciones: Vec<usize> = self
+            .estado_reproductor
+            .cola
+            .iter()
+            .enumerate()
+            .filter(|(_, elemento)| elemento.emisora_id() == Some(emisora_id))
+            .map(|(posicion, _)| posicion)
+            .collect();
+        for posicion in posiciones.into_iter().rev() {
+            ctx.reproductor
+                .enviar(ComandoReproductor::EliminarDeCola { posicion });
+        }
+    }
+
+    fn enviar_click_emisora(&self, ctx: &ContextoApp<'_>, emisora_id: i64) {
+        let Some(directorio) = self.directorio.as_ref() else {
+            return;
+        };
+        if let Ok(Some(emisora)) = consultas::emisoras::por_id(ctx.conn, emisora_id)
+            && let Some(uuid) = emisora.radiobrowser_uuid
+            && !uuid.trim().is_empty()
+        {
+            directorio.enviar(ComandoDirectorio::Click(uuid));
         }
     }
 
@@ -2383,12 +3451,30 @@ impl AppEstado {
 
     pub fn esta_detenido(&self) -> bool {
         self.estado_reproductor.estado == Estado::Detenido
-            && self.estado_reproductor.pista_actual.is_none()
+            && self.estado_reproductor.pista_actual().is_none()
     }
 }
 
 fn en_rect(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
+}
+
+fn cache_vigente(obtenido_en: &str) -> bool {
+    bd::unix_desde_iso(obtenido_en)
+        .map(|unix| bd::ahora_unix() - unix < 24 * 3600)
+        .unwrap_or(false)
+}
+
+fn aviso_cache(obtenido_en: &str) -> Option<String> {
+    let unix = bd::unix_desde_iso(obtenido_en)?;
+    let horas = (bd::ahora_unix() - unix).max(0) / 3600;
+    if horas <= 0 {
+        None
+    } else if horas < 24 {
+        Some(format!("caché, hace {horas} h"))
+    } else {
+        Some(format!("caché, hace {} d", horas / 24))
+    }
 }
 
 fn mover_indice(actual: usize, ultimo: usize, delta: isize) -> usize {

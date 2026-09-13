@@ -3,29 +3,32 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use mmmusic::biblioteca::bd;
 use mmmusic::biblioteca::escaner::{self, ModoEscaneo};
-use mmmusic::biblioteca::modelos::PistaResumen;
+use mmmusic::biblioteca::modelos::{ElementoCola, PistaResumen};
+use mmmusic::biblioteca::{bd, consultas};
 use mmmusic::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use mmmusic::reproductor::cola::Cola;
 use mmmusic::reproductor::estado::{Estado, Repeticion};
 use mmmusic::reproductor::{self, ComandoReproductor};
 
-fn pista(id: i64) -> PistaResumen {
-    PistaResumen {
+fn elemento(id: i64) -> ElementoCola {
+    ElementoCola::Pista(PistaResumen {
         id,
         titulo: format!("Pista {id}"),
         ..PistaResumen::default()
-    }
+    })
 }
 
 #[test]
 fn aleatorio_y_repeticion_en_la_cola() {
     let mut cola = Cola::nueva();
-    cola.reemplazar((1..=6).map(pista).collect(), 2);
-    let actual = cola.actual().map(|item| item.pista.id);
+    cola.reemplazar((1..=6).map(elemento).collect(), 2);
+    let actual = cola.actual().and_then(|item| item.elemento.pista_id());
     cola.alternar_aleatorio();
-    assert_eq!(cola.actual().map(|item| item.pista.id), actual);
+    assert_eq!(
+        cola.actual().and_then(|item| item.elemento.pista_id()),
+        actual
+    );
     cola.alternar_aleatorio();
     assert_eq!(cola.indice, Some(2));
     assert_eq!(cola.items[2].posicion_orig, 2);
@@ -111,10 +114,17 @@ fn reproduce_persiste_y_restaura_la_cola() {
 
     let (tx, rx) = mpsc::channel();
     let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
-    let (manejo, _watch) =
-        reproductor::lanzar(ruta_bd.clone(), 70, tx, tx_scrobbling).expect("lanzar reproductor");
+    let conn = bd::abrir(&ruta_bd).expect("bd");
+    let elementos: Vec<ElementoCola> = consultas::pistas_resumen_por_ids(&conn, &ids)
+        .expect("resúmenes")
+        .into_iter()
+        .map(ElementoCola::Pista)
+        .collect();
+    drop(conn);
+    let (manejo, _watch) = reproductor::lanzar(ruta_bd.clone(), 70, 15, tx, tx_scrobbling)
+        .expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
-        pistas: ids.clone(),
+        elementos,
         indice: 1,
     });
     esperar_estado(
@@ -177,9 +187,9 @@ fn tres_fallos_seguidos_pasan_a_detenido() {
     let (tx, rx) = mpsc::channel();
     let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
     let (manejo, _watch) =
-        reproductor::lanzar(ruta_bd, 50, tx, tx_scrobbling).expect("lanzar reproductor");
+        reproductor::lanzar(ruta_bd, 50, 15, tx, tx_scrobbling).expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
-        pistas: vec![1, 2, 3],
+        elementos: vec![elemento(1), elemento(2), elemento(3)],
         indice: 0,
     });
 

@@ -54,6 +54,9 @@ pub enum Accion {
     CiclarOrden,
     InvertirOrden,
     TeclaG,
+    PestanaAnterior,
+    PestanaSiguiente,
+    BuscarTituloIcy,
 }
 
 pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
@@ -71,8 +74,7 @@ pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
     match tecla.code {
         KeyCode::Char(caracter) => match caracter {
             'q' => Some(Accion::Salir),
-            '1'..='6' => Vista::desde_numero(caracter as usize - '0' as usize).map(Accion::IrA),
-            '7' => Some(Accion::IrA(Vista::Visual)),
+            '1'..='8' => Vista::desde_numero(caracter as usize - '0' as usize).map(Accion::IrA),
             '?' => Some(Accion::Ayuda),
             'c' => Some(Accion::AlternarCola),
             't' => Some(Accion::RecargarTema),
@@ -111,6 +113,9 @@ pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
             'o' => Some(Accion::CiclarOrden),
             'O' => Some(Accion::InvertirOrden),
             '/' => Some(Accion::EnfocarBuscar),
+            '[' => Some(Accion::PestanaAnterior),
+            ']' => Some(Accion::PestanaSiguiente),
+            'f' => Some(Accion::BuscarTituloIcy),
             _ => None,
         },
         KeyCode::Down => Some(Accion::Abajo),
@@ -162,6 +167,10 @@ mod pruebas {
         assert_eq!(
             traducir(&tecla(KeyCode::Char('7'))),
             Some(Accion::IrA(Vista::Visual))
+        );
+        assert_eq!(
+            traducir(&tecla(KeyCode::Char('8'))),
+            Some(Accion::IrA(Vista::Radio))
         );
         assert_eq!(traducir(&tecla(KeyCode::Char('?'))), Some(Accion::Ayuda));
     }

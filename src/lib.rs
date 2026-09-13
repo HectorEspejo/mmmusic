@@ -6,6 +6,8 @@ pub mod config;
 pub mod credenciales;
 pub mod eventos;
 pub mod mpris;
+pub mod radio;
+pub mod red;
 pub mod reproductor;
 pub mod scrobbling;
 pub mod tema;

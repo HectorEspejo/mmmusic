@@ -23,7 +23,10 @@ La documentación funcional vive en `docs/` (plano, sin subcarpetas por fase):
 - `mmmusic-fase2-implementacion.md` — informe de implementación de la fase 2 (cerrada)
 - `mmmusic-fase3-informe.md` — especificación funcional completa de la fase 3
 - `mmmusic-fase3-checklist.md` — alcance verificable de la fase 3
-- `mmmusic-fase3-implementacion.md` — informe de implementación (lo escribes tú)
+- `mmmusic-fase3-implementacion.md` — informe de implementación de la fase 3 (cerrada)
+- `mmmusic-fase5-informe.md` — especificación funcional completa de la fase 5 (la fase 4 no está especificada; no existe)
+- `mmmusic-fase5-checklist.md` — alcance verificable de la fase 5
+- `mmmusic-fase5-implementacion.md` — informe de implementación (lo escribes tú)
 
 El informe de fase manda sobre tu criterio: si algo te parece incorrecto o
 incompleto, no lo cambies por tu cuenta — impleméntalo como está o párate y
@@ -69,9 +72,19 @@ coméntalo con el desarrollador.
 - Pruebas manuales aisladas: exporta `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
   `XDG_CACHE_HOME` y `XDG_STATE_HOME` a un directorio temporal para no tocar
   el perfil real.
-- Red: solo el hilo de scrobbling hace peticiones, con `ureq` (rustls), timeout
-  de 10 s y únicamente a `api.listenbrainz.org` y `ws.audioscrobbler.com`.
-  Los tests nunca tocan la red.
+- Red: todas las peticiones del código de mmmusic pasan por `red/cliente.rs`
+  (`ureq` rustls, timeout, User-Agent, `url_permitida()`), desde el hilo de
+  scrobbling o el hilo de directorio. Hosts permitidos: `api.listenbrainz.org`,
+  `ws.audioscrobbler.com` y los espejos de `all.api.radio-browser.info`. Única
+  excepción: logos de emisora (cualquier https, solo `image/*`, ≤ 512 KB, 5 s,
+  3 redirecciones, no confiables). Los streams de audio los abre mpv, nunca
+  `ureq`. Los tests nunca tocan la red.
+- Cola, historial y envíos son mixtos (`ElementoCola`): exactamente uno de
+  `pista_id` / `emisora_id` por fila, validado en código. Una "escucha" es una
+  canción reconocida, nunca una conexión.
+- Recrear tablas en migraciones (SQLite no permite quitar `NOT NULL`): en
+  transacción, `INSERT … SELECT`, y copia previa `mmmusic.db.pre-NNN` borrada
+  en el siguiente arranque correcto.
 - Secretos: viven solo en `~/.config/mmmusic/credenciales.toml` (permisos 600).
   Nunca los escribas en logs, toasts, `error_msg`, tests, fixtures ni en el
   informe de implementación.
@@ -97,6 +110,14 @@ coméntalo con el desarrollador.
   castellano; no copies diseños, nombres ni recursos de otros reproductores.
 - Tests sin PipeWire: el análisis y las visuales se prueban con señales
   sintéticas; la captura real la valida el desarrollador en Omarchy.
+- PipeWire: el nodo de libmpv se llama "mpv" y no lleva PID; el nombre de
+  `audio-client-name` y el PID están en el global `Client`. Localiza nodos
+  propios por `client.id`. Un enlace en `Paused` NO es un fallo.
+- Estructuras compartidas con hilos de tiempo real: atómicos por elemento sin
+  `unsafe`; callbacks con `try_borrow_mut` tolerantes a reentrada; comandos y
+  plazos atendidos por un timer del propio bucle (valor > 0).
+- Valores por defecto que dependen de la configuración se siembran por código
+  en AJUSTES, nunca como constantes en el SQL de una migración.
 - Fixtures de audio en `tests/fixtures/` (ficheros diminutos de los seis
   formatos, generados una vez con ffmpeg y versionados).
 

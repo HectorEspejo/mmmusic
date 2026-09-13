@@ -40,6 +40,10 @@ pub struct Iconos {
     pub scrobbling_pendiente: &'static str,
     pub scrobbling_error: &'static str,
     pub corazon: &'static str,
+    pub directo: &'static str,
+    pub reconectando: &'static str,
+    pub almacenando: &'static str,
+    pub emisora: &'static str,
 }
 
 impl Iconos {
@@ -62,6 +66,10 @@ impl Iconos {
                 scrobbling_pendiente: "…",
                 scrobbling_error: "!",
                 corazon: "♥",
+                directo: "●",
+                reconectando: "⟳",
+                almacenando: "◌",
+                emisora: "◉",
             },
             ModoIconos::Ascii => Self {
                 reproducir: ">",
@@ -80,6 +88,10 @@ impl Iconos {
                 scrobbling_pendiente: "sc:",
                 scrobbling_error: "sc:err",
                 corazon: "♥",
+                directo: "*",
+                reconectando: "~",
+                almacenando: "o",
+                emisora: "(R)",
             },
         }
     }
