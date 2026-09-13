@@ -7,10 +7,12 @@ use directories::{ProjectDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::ecualizador::replaygain::ModoReplayGain;
+
 pub const NOMBRE_APP: &str = "mmmusic";
 const CARPETA_TEMA_OMARCHY: &str = ".config/omarchy/current";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub biblioteca: ConfigBiblioteca,
@@ -20,6 +22,8 @@ pub struct Config {
     pub scrobbling: ConfigScrobbling,
     pub visuales: ConfigVisuales,
     pub radio: ConfigRadio,
+    pub ecualizador: ConfigEcualizador,
+    pub letras: ConfigLetras,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +201,53 @@ impl Default for ConfigRadio {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ActivoAlArrancar {
+    #[default]
+    Recordar,
+    Si,
+    No,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigEcualizador {
+    pub activo_al_arrancar: ActivoAlArrancar,
+    pub limitador: bool,
+    pub replaygain: ModoReplayGain,
+    pub replaygain_preamp_db: f64,
+}
+
+impl Default for ConfigEcualizador {
+    fn default() -> Self {
+        Self {
+            activo_al_arrancar: ActivoAlArrancar::Recordar,
+            limitador: true,
+            replaygain: ModoReplayGain::No,
+            replaygain_preamp_db: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfigLetras {
+    pub carpeta: String,
+    pub superpuestas: bool,
+    pub tamano_superposicion: u16,
+}
+
+impl Default for ConfigLetras {
+    fn default() -> Self {
+        Self {
+            carpeta: "~/.local/share/mmmusic/letras".to_string(),
+            superpuestas: false,
+            tamano_superposicion: 3,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CargaConfig {
     pub config: Config,
@@ -290,6 +341,25 @@ impl Config {
             );
             self.radio.espera_conexion_s = 15;
         }
+        if !(-12.0..=12.0).contains(&self.ecualizador.replaygain_preamp_db) {
+            warn!(
+                valor = self.ecualizador.replaygain_preamp_db,
+                "ecualizador.replaygain_preamp_db fuera de rango; se acota a ±12"
+            );
+            self.ecualizador.replaygain_preamp_db =
+                self.ecualizador.replaygain_preamp_db.clamp(-12.0, 12.0);
+        }
+        if self.letras.carpeta.trim().is_empty() {
+            warn!("letras.carpeta vacía; se usa ~/.local/share/mmmusic/letras");
+            self.letras.carpeta = ConfigLetras::default().carpeta;
+        }
+        if !(1..=5).contains(&self.letras.tamano_superposicion) {
+            warn!(
+                valor = self.letras.tamano_superposicion,
+                "letras.tamano_superposicion fuera de rango; se usa 3"
+            );
+            self.letras.tamano_superposicion = 3;
+        }
     }
 
     pub fn carpetas_expandidas(&self) -> Vec<PathBuf> {
@@ -302,6 +372,10 @@ impl Config {
 
     pub fn carpeta_playlists(&self) -> PathBuf {
         expandir_ruta(&self.biblioteca.carpeta_playlists)
+    }
+
+    pub fn carpeta_letras(&self) -> PathBuf {
+        expandir_ruta(&self.letras.carpeta)
     }
 }
 
@@ -519,6 +593,37 @@ espera_conexion_s = 1
         assert!(!config.radio.logos);
         config.validar();
         assert_eq!(config.radio.espera_conexion_s, 15);
+    }
+
+    #[test]
+    fn ecualizador_y_letras_se_parsean_y_acotan() {
+        let texto = r#"
+[ecualizador]
+activo_al_arrancar = "si"
+limitador = false
+replaygain = "album"
+replaygain_preamp_db = 9.5
+
+[letras]
+carpeta = "~/Letras"
+superpuestas = true
+tamano_superposicion = 7
+"#;
+        let mut config: Config = toml::from_str(texto).expect("parseo");
+        assert_eq!(config.ecualizador.activo_al_arrancar, ActivoAlArrancar::Si);
+        assert!(!config.ecualizador.limitador);
+        assert_eq!(config.ecualizador.replaygain, ModoReplayGain::Album);
+        assert_eq!(config.ecualizador.replaygain_preamp_db, 9.5);
+        assert!(config.letras.superpuestas);
+        config.validar();
+        assert_eq!(config.letras.tamano_superposicion, 3);
+
+        let mut config: Config = Config::default();
+        config.ecualizador.replaygain_preamp_db = 50.0;
+        config.letras.carpeta = "  ".to_string();
+        config.validar();
+        assert_eq!(config.ecualizador.replaygain_preamp_db, 12.0);
+        assert_eq!(config.letras.carpeta, ConfigLetras::default().carpeta);
     }
 
     #[test]

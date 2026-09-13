@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
 use crate::app::AppEstado;
 use crate::biblioteca::modelos::ElementoCola;
+use crate::ecualizador::replaygain::ModoReplayGain;
 use crate::reproductor::estado::{EstadoStream, Repeticion};
 use crate::ui::componentes::imagen;
 use crate::ui::formatear_ms;
@@ -51,7 +52,11 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
         None => ("(detenido)".to_string(), String::new(), None, None, None),
     };
 
-    let linea_controles = controles(app, indicador_scrobbling(app, compacto_ancho));
+    let linea_controles = controles(
+        app,
+        compacto_ancho,
+        indicador_scrobbling(app, compacto_ancho),
+    );
     let ancho_controles = (linea_controles.width() as u16 + 3).min(interior.width / 2);
 
     if compacto {
@@ -240,7 +245,7 @@ fn formatear_directo(ms: i64) -> String {
     format!("{horas:02}:{minutos:02}:{segundos:02}")
 }
 
-fn controles(app: &AppEstado, indicador: Option<Span<'static>>) -> Line<'static> {
+fn controles(app: &AppEstado, compacto: bool, indicador: Option<Span<'static>>) -> Line<'static> {
     let estado = &app.estado_reproductor;
     let icono_estado = if estado.sonando() {
         app.iconos.pausa
@@ -287,6 +292,26 @@ fn controles(app: &AppEstado, indicador: Option<Span<'static>>) -> Line<'static>
             Style::new().fg(app.paleta.texto),
         ),
     ];
+    let eq = &estado.eq;
+    if eq.activo {
+        spans.push(Span::styled("  ", Style::new()));
+        spans.push(Span::styled(
+            if compacto { "E" } else { "EQ" },
+            Style::new().fg(color_activo).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if eq.replaygain != ModoReplayGain::No {
+        spans.push(Span::styled(" ", Style::new()));
+        let color = if eq.tiene_replaygain {
+            color_activo
+        } else {
+            color_inactivo
+        };
+        spans.push(Span::styled(
+            if compacto { "G" } else { "RG" },
+            Style::new().fg(color),
+        ));
+    }
     if let Some(indicador) = indicador {
         spans.push(Span::styled("  ", Style::new()));
         spans.push(indicador);

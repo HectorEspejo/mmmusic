@@ -39,8 +39,8 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
         ("Esc", "volver / cerrar"),
         ("?", "mostrar u ocultar esta ayuda"),
         (
-            "1-8",
-            "Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists, Visual, Radio",
+            "1-9",
+            "Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists, Visual, Radio, Letras",
         ),
         ("c", "mostrar u ocultar la cola"),
         ("Tab / Shift+Tab", "ciclar foco sidebar → contenido → cola"),
@@ -121,6 +121,41 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
         ("/", "pestaña Buscar y foco en Nombre"),
         ("f", "buscar el título ICY en la biblioteca"),
         ("Tab", "ciclar campos en Buscar"),
+    ] {
+        lineas.push(Line::from(vec![
+            Span::styled(format!("   {k:<17} "), tecla),
+            Span::styled(d, descripcion),
+        ]));
+    }
+    añadir_seccion("Ecualizador (E)", &mut lineas);
+    for (k, d) in [
+        ("E", "abrir o cerrar el overlay del ecualizador"),
+        ("h / l", "banda anterior / siguiente (preamp incluido)"),
+        ("j / k / J / K", "±1 dB / ±0,5 dB en la banda"),
+        ("0 / R", "banda a 0 / todo a Plano"),
+        ("Tab / Enter", "barras ↔ lista de presets / aplicar preset"),
+        (
+            "N / D",
+            "guardar la curva como preset / borrar un preset propio",
+        ),
+        (
+            "e / x / g",
+            "EQ on-off / limitador / ReplayGain no-pista-álbum",
+        ),
+    ] {
+        lineas.push(Line::from(vec![
+            Span::styled(format!("   {k:<17} "), tecla),
+            Span::styled(d, descripcion),
+        ]));
+    }
+    añadir_seccion("Letras (9)", &mut lineas);
+    for (k, d) in [
+        ("9", "vista Letras; en modo visual, letras superpuestas"),
+        ("j / k / rueda", "desplazamiento manual durante 5 s"),
+        ("Enter", "saltar a la línea y volver a seguimiento"),
+        ("( / )", "offset −100 / +100 ms (Shift: ±500 ms)"),
+        ("s", "alternar fuente fichero / etiqueta"),
+        ("gg / G", "inicio / fin"),
     ] {
         lineas.push(Line::from(vec![
             Span::styled(format!("   {k:<17} "), tecla),

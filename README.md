@@ -35,6 +35,12 @@ terminal y MPRIS para Waybar/`playerctl` y las teclas multimedia de Hyprland.
   anunciadas.
 - Directorio abierto Radio Browser (búsqueda por nombre, país y etiqueta) con
   caché local de 24 h y descarga acotada de logos.
+- Ecualizador de 10 bandas (31 Hz–16 kHz) con preamp, limitador y presets
+  integrados o propios, ajustado en caliente sobre la cadena `af` de mpv, más
+  ReplayGain nativo (pista/álbum) con indicador `EQ`/`RG` en la barra inferior.
+- Letras locales `.lrc`/`.txt` junto a la pista o en `letras.carpeta`, y
+  etiquetas USLT/LYRICS embebidas, con vista `9 Letras` sincronizada, offset
+  por pista y superposición sobre las visuales.
 - MPRIS (`org.mpris.MediaPlayer2.mmmusic`) para `playerctl`, Waybar y teclas
   multimedia.
 
@@ -141,6 +147,45 @@ cacheados a 300×300 en `~/.cache/mmmusic/logos/{id}.jpg`. Con
 Buscar se limita a las emisoras locales; `radio.logos = false` desactiva los
 logos.
 
+## Ecualizador y ReplayGain
+
+`E` abre el overlay del ecualizador (10 bandas ISO + preamp) sobre cualquier
+vista: `h`/`l` eligen banda, `j`/`k` mueven ±1 dB (`J`/`K` ±0,5), `0` pone la
+banda a cero y `R` restablece la curva a Plano. `Tab` alterna con la lista de
+presets y `Enter` aplica el elegido; `N` guarda la curva actual como preset
+propio (1–40 caracteres, único) y `D` lo elimina. Los integrados (Plano, Rock,
+Pop, Electrónica, Hip-hop, Vocal, Bass boost, Treble boost y Loudness) no se
+pueden editar ni borrar. `e` activa o desactiva el EQ, `x` el limitador y `g`
+cicla ReplayGain (`no` → `pista` → `álbum`).
+
+Los cambios de banda y preamp se aplican con `af-command` sin cortar el audio;
+solo activar o desactivar el limitador reconstruye la cadena. Con la curva plana
+mpv queda sin filtros (`af = ""`). La sección `[ecualizador]` de `config.toml`
+fija `activo_al_arrancar` (`recordar`/`si`/`no`), `limitador`, `replaygain` y
+`replaygain_preamp_db`; después se recuerda el último estado. Si la build de mpv
+no trae lavfi, el overlay lo explica y ReplayGain sigue funcionando.
+
+## Letras
+
+`9` abre la vista Letras. mmmusic busca, por este orden: `<pista>.lrc` y
+`<pista>.txt` junto al audio, `<artista> - <titulo>.lrc|.txt` (normalizados, sin
+diacríticos) en `letras.carpeta`, y la etiqueta USLT (ID3) o LYRICS
+(Vorbis/MP4) del fichero. El parser admite timestamps múltiples por línea,
+metadatos, `[offset:…]` y marcas enhanced.
+
+En la vista sincronizada, `j`/`k` (o la rueda) desplazan durante 5 s sin parar
+el seguimiento, `Enter` salta a la línea seleccionada, `(`/`)` ajustan el offset
+±100 ms (Shift: ±500 ms) y `s` alterna entre fichero y etiqueta. El offset se
+guarda por pista en `mmmusic.db`; mmmusic nunca escribe en tu biblioteca.
+
+Con letra sincronizada, `9` dentro del modo visual superpone las líneas sobre la
+visual; `[letras]` en `config.toml` controla `carpeta`, `superpuestas` y
+`tamano_superposicion`.
+
+> Presets propios, offsets de letras y preferencias de fuente viven en
+> `mmmusic.db`, junto a playlists, favoritas e historial: haz copias de
+> seguridad periódicas.
+
 ## Visuales
 
 La sección `7 Visual` muestra a pantalla completa visualizaciones que reaccionan
@@ -186,9 +231,11 @@ Globales:
 | `q` / `Ctrl+c` | Salir guardando / salir inmediato |
 | `Esc` | Volver o cerrar |
 | `?` | Ayuda |
-| `1`–`6` | Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists |
+| `1`–`9` | Inicio, Buscar, Artistas, Álbumes, Pistas, Playlists, Visual, Radio, Letras |
 | `7` | Modo visual (entrar o salir) |
 | `8` | Radio |
+| `9` | Letras; en modo visual, letras superpuestas |
+| `E` | Overlay del ecualizador |
 | `c` | Panel de cola |
 | `Tab` / `Shift+Tab` | Ciclar foco |
 | `Ctrl+r` | Reescanear |
@@ -196,8 +243,15 @@ Globales:
 
 En el modo visual: `v`/`V` ciclan las visuales, `1`–`6` saltan a una concreta,
 `[`/`]` ajustan la sensibilidad (×0.8 / ×1.25), `b` alterna la paleta
-tema ↔ carátula y `7`/`Esc` salen; los atajos de reproducción y `L` siguen
-activos.
+tema ↔ carátula, `9` alterna las letras superpuestas y `7`/`Esc` salen; los
+atajos de reproducción y `L` siguen activos.
+
+Ecualizador (`E`): `h`/`l` banda, `j`/`k` ±1 dB, `J`/`K` ±0,5 dB, `0` a cero,
+`R` a Plano, `Tab` presets, `Enter` aplicar, `N` guardar, `D` borrar, `e` EQ,
+`x` limitador, `g` ReplayGain y `Esc` cerrar.
+
+Letras (`9`): `j`/`k`/rueda desplazan, `Enter` salta a la línea, `(`/`)`
+offset, `s` alterna fichero/etiqueta y `gg`/`G` van al inicio/fin.
 
 Radio: `[`/`]` cambian de pestaña, `f` busca el título ICY en la biblioteca,
 `Enter` escucha (en Buscar guarda) y `Tab` cicla los campos de búsqueda. Con

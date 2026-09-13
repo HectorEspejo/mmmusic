@@ -5,13 +5,18 @@ use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use tracing::{info, warn};
 
-pub const VERSION_RADIO: i32 = 4;
+pub const VERSION_ACTUAL: i32 = 5;
+
+/// Última migración que recrea tablas: hasta que no se aplica, se conserva la
+/// copia `mmmusic.db.pre-004`.
+const VERSION_COPIA_PREVIA: i32 = 4;
 
 const MIGRACIONES: &[(i32, &str)] = &[
     (1, include_str!("migraciones/001_inicial.sql")),
     (2, include_str!("migraciones/002_recopilatorios_envios.sql")),
     (3, include_str!("migraciones/003_colores_albumes.sql")),
     (4, include_str!("migraciones/004_radio.sql")),
+    (5, include_str!("migraciones/005_ecualizador_letras.sql")),
 ];
 
 pub fn abrir(ruta: &Path) -> Result<Connection> {
@@ -34,7 +39,7 @@ pub fn abrir(ruta: &Path) -> Result<Connection> {
 
 /// Abre la base de datos y aplica las migraciones pendientes. Si la base está
 /// en una versión anterior a la 4, antes de migrar deja una copia
-/// `mmusic.db.pre-004` que solo se borra en el siguiente arranque mediante
+/// `mmmusic.db.pre-004` que solo se borra en el siguiente arranque mediante
 /// `limpiar_copia_previa_si_migrada`.
 pub fn abrir_y_migrar(ruta: &Path) -> Result<Connection> {
     crear_copia_previa_si_procede(ruta)?;
@@ -61,13 +66,13 @@ fn version_si_existe(ruta: &Path) -> Result<Option<i32>> {
     Ok(Some(version))
 }
 
-/// Crea `mmusic.db.pre-004` (con la WAL volcada) solo si la base está en una
+/// Crea `mmmusic.db.pre-004` (con la WAL volcada) solo si la base está en una
 /// versión anterior a la 4 y aún no hay copia.
 fn crear_copia_previa_si_procede(ruta: &Path) -> Result<()> {
     let Some(version) = version_si_existe(ruta)? else {
         return Ok(());
     };
-    if !(1..VERSION_RADIO).contains(&version) {
+    if !(1..VERSION_COPIA_PREVIA).contains(&version) {
         return Ok(());
     }
     let copia = ruta_copia_previa(ruta);
@@ -88,13 +93,13 @@ fn crear_copia_previa_si_procede(ruta: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Borra `mmusic.db.pre-004` cuando la base ya está migrada; se llama una sola
+/// Borra `mmmusic.db.pre-004` cuando la base ya está migrada; se llama una sola
 /// vez en el arranque de la aplicación o de un subcomando.
 pub fn limpiar_copia_previa_si_migrada(ruta: &Path) -> Result<()> {
     let Some(version) = version_si_existe(ruta)? else {
         return Ok(());
     };
-    if version < VERSION_RADIO {
+    if version < VERSION_COPIA_PREVIA {
         return Ok(());
     }
     let copia = ruta_copia_previa(ruta);
@@ -276,7 +281,7 @@ mod pruebas {
         let mut conn = Connection::open_in_memory().expect("conexión en memoria");
         conn.pragma_update(None, "foreign_keys", "ON").expect("fk");
         let version = migrar(&mut conn).expect("migración");
-        assert_eq!(version, VERSION_RADIO);
+        assert_eq!(version, VERSION_ACTUAL);
         for tabla in [
             "ARTISTAS",
             "ALBUMES",
@@ -292,6 +297,8 @@ mod pruebas {
             "EMISORAS",
             "EMISORA_TITULOS",
             "BUSQUEDAS_RADIO",
+            "PRESETS_EQ",
+            "LETRAS",
         ] {
             let existe: i64 = conn
                 .query_row(
@@ -311,7 +318,7 @@ mod pruebas {
             .expect("bandera de reescaneo");
         assert_eq!(pendiente, "1");
         let version2 = migrar(&mut conn).expect("segunda migración");
-        assert_eq!(version2, VERSION_RADIO);
+        assert_eq!(version2, VERSION_ACTUAL);
         let colores: i64 = conn
             .query_row(
                 "SELECT count(*) FROM pragma_table_info('ALBUMES') WHERE name = 'colores'",
@@ -337,6 +344,23 @@ mod pruebas {
             )
             .expect("columna titulo_icy");
         assert_eq!(titulo_icy, 1);
+        let preamp: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('PRESETS_EQ')
+                    WHERE name = 'preamp_db'",
+                [],
+                |f| f.get(0),
+            )
+            .expect("columna preamp_db");
+        assert_eq!(preamp, 1);
+        let offset: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('LETRAS') WHERE name = 'offset_ms'",
+                [],
+                |f| f.get(0),
+            )
+            .expect("columna offset_ms");
+        assert_eq!(offset, 1);
     }
 
     #[test]
@@ -360,7 +384,7 @@ mod pruebas {
         )
         .expect("datos previos");
         let version = migrar(&mut conn).expect("migración 004");
-        assert_eq!(version, VERSION_RADIO);
+        assert_eq!(version, VERSION_ACTUAL);
         let cola: (i64, String) = conn
             .query_row("SELECT pista_id, tipo FROM COLA", [], |f| {
                 Ok((f.get(0)?, f.get(1)?))
@@ -413,7 +437,8 @@ mod pruebas {
              INSERT INTO HISTORIAL_REPRODUCCION (pista_id, reproducido_en, completada) VALUES (1, 'x', 0);
              INSERT INTO ENVIOS (servicio, tipo, pista_id, historial_id, reproducido_en, proximo_intento_en, creado_en)
                 VALUES ('lastfm', 'scrobble', 1, 1, 'x', 'x', 'x');
-             INSERT INTO FAVORITAS (pista_id, marcada_en) VALUES (1, 'x');",
+             INSERT INTO FAVORITAS (pista_id, marcada_en) VALUES (1, 'x');
+             INSERT INTO LETRAS (pista_id, offset_ms, actualizado_en) VALUES (1, 0, 'x');",
         )
         .expect("datos");
         conn.execute("DELETE FROM PISTAS WHERE id = 1", [])
@@ -424,6 +449,7 @@ mod pruebas {
             "HISTORIAL_REPRODUCCION",
             "ENVIOS",
             "FAVORITAS",
+            "LETRAS",
         ] {
             let filas: i64 = conn
                 .query_row(&format!("SELECT count(*) FROM {tabla}"), [], |f| f.get(0))

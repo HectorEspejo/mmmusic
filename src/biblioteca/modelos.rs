@@ -165,6 +165,16 @@ pub struct TituloEmisora {
     pub visto_en: String,
 }
 
+/// Fila de PRESETS_EQ con las ganancias ya parseadas.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresetEq {
+    pub id: i64,
+    pub nombre: String,
+    pub ganancias: [f32; crate::ecualizador::BANDAS],
+    pub preamp_db: f32,
+    pub integrado: bool,
+}
+
 /// Elemento de la cola mixta: o una pista de la biblioteca o una emisora.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ElementoCola {

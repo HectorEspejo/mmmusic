@@ -62,7 +62,7 @@ fn migracion_004_preserva_datos_y_deja_copia_previa() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |fila| fila.get(0))
         .expect("version");
-    assert_eq!(version, bd::VERSION_RADIO);
+    assert_eq!(version, bd::VERSION_ACTUAL);
     let copia = ruta.with_file_name("mmmusic.db.pre-004");
     assert!(copia.exists(), "debe existir la copia previa");
     assert_eq!(

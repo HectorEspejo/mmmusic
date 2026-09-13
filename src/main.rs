@@ -13,9 +13,10 @@ use mmmusic::audio::{self, Anillo};
 use mmmusic::biblioteca::escaner::ModoEscaneo;
 use mmmusic::biblioteca::{bd, caratulas, consultas};
 use mmmusic::cli::{self, Cli, Comando};
-use mmmusic::config::{Config, Rutas};
+use mmmusic::config::{ActivoAlArrancar, Config, Rutas};
 use mmmusic::credenciales;
 use mmmusic::eventos::{AppEvento, NivelAviso};
+use mmmusic::letras;
 use mmmusic::mpris;
 use mmmusic::reproductor::{self, ManejoReproductor};
 use mmmusic::scrobbling;
@@ -53,13 +54,46 @@ fn ejecutar_tui() -> Result<()> {
     let carga = Config::cargar(&rutas.config)?;
     bd::limpiar_copia_previa_si_migrada(&rutas.base_datos)?;
     let conn = bd::abrir_y_migrar(&rutas.base_datos)?;
+    let replaygain_preamp = format!("{:.1}", carga.config.ecualizador.replaygain_preamp_db);
     consultas::ajustes::sembrar(
         &conn,
         &[
             ("radio_pestana", "favoritas"),
             ("radiobrowser_servidor", ""),
+            (
+                "eq_activo",
+                match carga.config.ecualizador.activo_al_arrancar {
+                    ActivoAlArrancar::Si => "1",
+                    ActivoAlArrancar::Recordar | ActivoAlArrancar::No => "0",
+                },
+            ),
+            ("eq_preset_id", ""),
+            ("eq_ganancias", "0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0"),
+            ("eq_preamp_db", "0.0"),
+            (
+                "eq_limitador",
+                if carga.config.ecualizador.limitador {
+                    "1"
+                } else {
+                    "0"
+                },
+            ),
+            (
+                "replaygain_modo",
+                carga.config.ecualizador.replaygain.como_str(),
+            ),
+            ("replaygain_preamp_db", &replaygain_preamp),
+            (
+                "letras_superpuestas",
+                if carga.config.letras.superpuestas {
+                    "1"
+                } else {
+                    "0"
+                },
+            ),
         ],
     )?;
+    consultas::presets_eq::sembrar_integrados(&conn)?;
     if consultas::escaneos::marcar_huerfanos(&conn)? > 0 {
         tracing::warn!("se marcaron escaneos interrumpidos como error");
     }
@@ -83,6 +117,12 @@ fn ejecutar_tui() -> Result<()> {
         app.notificar(
             NivelAviso::Aviso,
             format!("No se pudieron leer los ajustes de radio: {error:#}"),
+        );
+    }
+    if let Err(error) = app.aplicar_ajustes_letras(&conn) {
+        app.notificar(
+            NivelAviso::Aviso,
+            format!("No se pudieron leer los ajustes de letras: {error:#}"),
         );
     }
     if let Some(aviso) = aviso_tema {
@@ -178,10 +218,12 @@ fn ejecutar_tui() -> Result<()> {
         rutas.base_datos.clone(),
         carga.config.reproductor.volumen_inicial,
         carga.config.radio.espera_conexion_s,
+        carga.config.ecualizador.clone(),
         tx_app.clone(),
         manejo_scrobbling.emisor(),
     )?;
     mpris::lanzar(rx_estado, manejo_reproductor.emisor(), tx_app.clone())?;
+    app.conectar_letras(letras::lanzar(tx_app.clone())?);
     let mut terminal = ui::iniciar()?;
     let picker = ratatui_image::picker::Picker::from_query_stdio()
         .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
@@ -224,6 +266,7 @@ fn ejecutar_tui() -> Result<()> {
     let resultado = bucle(&mut terminal, &mut app, &recursos);
     app.cancelar_escaneo();
     manejo_reproductor.apagar();
+    app.apagar_letras();
     if let Some(manejo) = manejo_captura {
         manejo.apagar();
     }

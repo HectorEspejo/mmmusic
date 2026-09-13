@@ -153,6 +153,49 @@ impl ReproductorMpv {
             .context("no se pudo cambiar el silencio")
     }
 
+    /// Instala (o vacía) la cadena de filtros de audio etiquetada.
+    pub fn fijar_af(&self, cadena: &str) -> Result<()> {
+        self.mpv
+            .set_property("af", cadena)
+            .context("no se pudo fijar la cadena de filtros")
+    }
+
+    /// Cambia un parámetro de un filtro etiquetado sin reconstruir la cadena.
+    /// `filtro` es el `target` que exige mpv (el nombre del filtro FFmpeg,
+    /// p. ej. `equalizer` o `volume`); la etiqueta se pasa sin `@`.
+    pub fn af_command(
+        &self,
+        etiqueta: &str,
+        comando: &str,
+        valor: &str,
+        filtro: &str,
+    ) -> Result<()> {
+        let etiqueta = etiqueta.trim_start_matches('@');
+        self.mpv
+            .command("af-command", &[etiqueta, comando, valor, filtro])
+            .with_context(|| format!("no se pudo aplicar af-command {etiqueta} {comando}"))
+    }
+
+    pub fn fijar_texto(&self, propiedad: &str, valor: &str) -> Result<()> {
+        self.mpv
+            .set_property(propiedad, valor)
+            .with_context(|| format!("no se pudo fijar {propiedad}"))
+    }
+
+    pub fn fijar_numero(&self, propiedad: &str, valor: f64) -> Result<()> {
+        self.mpv
+            .set_property(propiedad, valor)
+            .with_context(|| format!("no se pudo fijar {propiedad}"))
+    }
+
+    /// Comprueba si la build de mpv trae filtros lavfi. Deja `af` vacío.
+    pub fn lavfi_disponible(&self) -> bool {
+        let prueba = "@eqtest:lavfi=[equalizer=f=1000:width_type=q:width=1.41:gain=0]";
+        let disponible = self.mpv.set_property("af", prueba).is_ok();
+        let _ = self.mpv.set_property("af", "");
+        disponible
+    }
+
     pub fn buscar_relativo(&self, segundos: f64) -> Result<()> {
         self.mpv
             .command("seek", &[&format!("{segundos:.3}"), "relative"])

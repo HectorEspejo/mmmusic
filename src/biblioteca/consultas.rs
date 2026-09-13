@@ -5,7 +5,8 @@ use super::bd;
 use super::etiquetas;
 use super::modelos::{
     AlbumResumen, ArtistaResumen, DetalleArtista, ElementoCola, Emisora, EmisoraResumen, Escaneo,
-    EstadoEscaneo, Inicio, Pista, PistaListado, PistaResumen, PlaylistResumen, TituloEmisora,
+    EstadoEscaneo, Inicio, Pista, PistaListado, PistaResumen, PlaylistResumen, PresetEq,
+    TituloEmisora,
 };
 
 pub const PAGINA_PISTAS: usize = 500;
@@ -389,6 +390,187 @@ pub mod ajustes {
             )
             .with_context(|| format!("no se pudo sembrar el ajuste {clave}"))?;
         }
+        Ok(())
+    }
+}
+
+pub mod presets_eq {
+    use super::*;
+    use crate::ecualizador::{acotar_db, acotar_preamp, presets};
+
+    fn desde_fila(fila: &rusqlite::Row<'_>) -> rusqlite::Result<PresetEq> {
+        let id: i64 = fila.get(0)?;
+        let nombre: String = fila.get(1)?;
+        let ganancias_texto: String = fila.get(2)?;
+        let preamp_db: f64 = fila.get(3)?;
+        let integrado: i64 = fila.get(4)?;
+        let ganancias = presets::parsear_ganancias(&ganancias_texto).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "ganancias de preset corruptas",
+                )),
+            )
+        })?;
+        Ok(PresetEq {
+            id,
+            nombre,
+            ganancias,
+            preamp_db: preamp_db as f32,
+            integrado: integrado != 0,
+        })
+    }
+
+    pub fn listar(conn: &Connection) -> Result<Vec<PresetEq>> {
+        let mut sentencia = conn
+            .prepare(
+                "SELECT id, nombre, ganancias, preamp_db, integrado FROM PRESETS_EQ
+                  ORDER BY integrado DESC, nombre_norm ASC",
+            )
+            .context("no se pudieron preparar los presets")?;
+        sentencia
+            .query_map([], desde_fila)
+            .context("no se pudieron listar los presets")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("no se pudieron leer los presets")
+    }
+
+    pub fn obtener(conn: &Connection, id: i64) -> Result<Option<PresetEq>> {
+        conn.query_row(
+            "SELECT id, nombre, ganancias, preamp_db, integrado FROM PRESETS_EQ WHERE id = ?1",
+            [id],
+            desde_fila,
+        )
+        .optional()
+        .with_context(|| format!("no se pudo leer el preset {id}"))
+    }
+
+    /// Crea un preset propio. Devuelve `None` si el nombre ya existe
+    /// (normalizado), incluidos los integrados. Valida y acota los valores.
+    pub fn crear(
+        conn: &Connection,
+        nombre: &str,
+        ganancias: &[f32; crate::ecualizador::BANDAS],
+        preamp_db: f32,
+    ) -> Result<Option<i64>> {
+        let nombre = presets::validar_nombre(nombre).map_err(|mensaje| anyhow::anyhow!(mensaje))?;
+        let nombre_norm = etiquetas::normalizar(&nombre);
+        let existe: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM PRESETS_EQ WHERE nombre_norm = ?1",
+                [&nombre_norm],
+                |fila| fila.get(0),
+            )
+            .optional()
+            .with_context(|| format!("no se pudo comprobar el preset {nombre}"))?;
+        if existe.is_some() {
+            return Ok(None);
+        }
+        let ganancias: [f32; crate::ecualizador::BANDAS] =
+            std::array::from_fn(|indice| acotar_db(ganancias[indice]));
+        let preamp_db = acotar_preamp(preamp_db);
+        conn.execute(
+            "INSERT INTO PRESETS_EQ (nombre, nombre_norm, ganancias, preamp_db, integrado, creado_en)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+            params![
+                nombre,
+                nombre_norm,
+                presets::formatear_ganancias(&ganancias),
+                f64::from(preamp_db),
+                bd::ahora_iso(),
+            ],
+        )
+        .with_context(|| format!("no se pudo crear el preset {nombre}"))?;
+        Ok(Some(conn.last_insert_rowid()))
+    }
+
+    /// Elimina un preset propio. Los integrados no se pueden borrar.
+    pub fn eliminar(conn: &Connection, id: i64) -> Result<bool> {
+        let filas = conn
+            .execute(
+                "DELETE FROM PRESETS_EQ WHERE id = ?1 AND integrado = 0",
+                [id],
+            )
+            .with_context(|| format!("no se pudo eliminar el preset {id}"))?;
+        Ok(filas > 0)
+    }
+
+    /// Crea los presets de fábrica que falten. Devuelve cuántos sembró.
+    pub fn sembrar_integrados(conn: &Connection) -> Result<usize> {
+        let mut sembrados = 0;
+        for preset in &presets::INTEGRADOS {
+            let nombre_norm = etiquetas::normalizar(preset.nombre);
+            let filas = conn
+                .execute(
+                    "INSERT INTO PRESETS_EQ
+                        (nombre, nombre_norm, ganancias, preamp_db, integrado, creado_en)
+                     VALUES (?1, ?2, ?3, ?4, 1, ?5)
+                     ON CONFLICT(nombre_norm) DO NOTHING",
+                    params![
+                        preset.nombre,
+                        nombre_norm,
+                        presets::formatear_ganancias(&preset.ganancias),
+                        f64::from(preset.preamp_db),
+                        bd::ahora_iso(),
+                    ],
+                )
+                .with_context(|| format!("no se pudo sembrar el preset {}", preset.nombre))?;
+            sembrados += filas;
+        }
+        Ok(sembrados)
+    }
+}
+
+pub mod letras {
+    use super::*;
+
+    pub fn offset(conn: &Connection, pista_id: i64) -> Result<i64> {
+        conn.query_row(
+            "SELECT offset_ms FROM LETRAS WHERE pista_id = ?1",
+            [pista_id],
+            |fila| fila.get(0),
+        )
+        .optional()
+        .with_context(|| format!("no se pudo leer el offset de la pista {pista_id}"))
+        .map(|valor| valor.unwrap_or(0))
+    }
+
+    pub fn fijar_offset(conn: &Connection, pista_id: i64, offset_ms: i64) -> Result<()> {
+        let offset_ms = offset_ms.clamp(-30_000, 30_000);
+        conn.execute(
+            "INSERT INTO LETRAS (pista_id, offset_ms, actualizado_en) VALUES (?1, ?2, ?3)
+             ON CONFLICT(pista_id) DO UPDATE SET
+                 offset_ms = excluded.offset_ms,
+                 actualizado_en = excluded.actualizado_en",
+            params![pista_id, offset_ms, bd::ahora_iso()],
+        )
+        .with_context(|| format!("no se pudo guardar el offset de la pista {pista_id}"))?;
+        Ok(())
+    }
+
+    pub fn fuente_preferida(conn: &Connection, pista_id: i64) -> Result<Option<String>> {
+        conn.query_row(
+            "SELECT fuente_preferida FROM LETRAS WHERE pista_id = ?1",
+            [pista_id],
+            |fila| fila.get(0),
+        )
+        .optional()
+        .with_context(|| format!("no se pudo leer la fuente de la pista {pista_id}"))
+        .map(Option::flatten)
+    }
+
+    pub fn fijar_fuente(conn: &Connection, pista_id: i64, fuente: &str) -> Result<()> {
+        conn.execute(
+            "INSERT INTO LETRAS (pista_id, offset_ms, fuente_preferida, actualizado_en)
+             VALUES (?1, 0, ?2, ?3)
+             ON CONFLICT(pista_id) DO UPDATE SET
+                 fuente_preferida = excluded.fuente_preferida,
+                 actualizado_en = excluded.actualizado_en",
+            params![pista_id, fuente, bd::ahora_iso()],
+        )
+        .with_context(|| format!("no se pudo guardar la fuente de la pista {pista_id}"))?;
         Ok(())
     }
 }
@@ -2386,6 +2568,81 @@ mod pruebas {
                 std::path::PathBuf::from("/musica/pista.mp3"),
                 std::path::PathBuf::from("/abs/pista2.flac"),
             ]
+        );
+    }
+
+    #[test]
+    fn siembra_presets_integrados_una_sola_vez() {
+        let conn = bd_con_pistas(1);
+        assert_eq!(presets_eq::sembrar_integrados(&conn).expect("sembrar"), 9);
+        assert_eq!(presets_eq::sembrar_integrados(&conn).expect("resembrar"), 0);
+        let presets = presets_eq::listar(&conn).expect("listar");
+        assert_eq!(presets.len(), 9);
+        assert!(presets.iter().all(|preset| preset.integrado));
+        let rock = presets
+            .iter()
+            .find(|preset| preset.nombre == "Rock")
+            .expect("Rock");
+        assert_eq!(rock.ganancias[0], 5.0);
+        assert_eq!(rock.preamp_db, -2.0);
+    }
+
+    #[test]
+    fn crea_y_elimina_presets_propios() {
+        let conn = bd_con_pistas(1);
+        presets_eq::sembrar_integrados(&conn).expect("sembrar");
+        let ganancias = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
+        let id = presets_eq::crear(&conn, "  Coche noche ", &ganancias, 1.5)
+            .expect("crear")
+            .expect("id");
+        assert!(
+            presets_eq::crear(&conn, "coche NOCHE", &ganancias, 0.0)
+                .expect("duplicado")
+                .is_none()
+        );
+        assert!(
+            presets_eq::crear(&conn, "Rock", &ganancias, 0.0)
+                .expect("integrado")
+                .is_none()
+        );
+        assert!(presets_eq::crear(&conn, "   ", &ganancias, 0.0).is_err());
+        let preset = presets_eq::obtener(&conn, id)
+            .expect("obtener")
+            .expect("existe");
+        assert_eq!(preset.nombre, "Coche noche");
+        assert!(!preset.integrado);
+        assert_eq!(preset.ganancias, ganancias);
+        assert_eq!(preset.preamp_db, 1.5);
+        let integrado = presets_eq::listar(&conn)
+            .expect("listar")
+            .into_iter()
+            .find(|preset| preset.integrado)
+            .expect("integrado");
+        assert!(!presets_eq::eliminar(&conn, integrado.id).expect("integr"));
+        assert!(presets_eq::eliminar(&conn, id).expect("eliminar"));
+        assert!(presets_eq::obtener(&conn, id).expect("obtener").is_none());
+    }
+
+    #[test]
+    fn guarda_offset_y_fuente_de_letras() {
+        let conn = bd_con_pistas(1);
+        assert_eq!(letras::offset(&conn, 1).expect("offset"), 0);
+        assert_eq!(letras::fuente_preferida(&conn, 1).expect("fuente"), None);
+        letras::fijar_offset(&conn, 1, -350).expect("fijar offset");
+        letras::fijar_fuente(&conn, 1, "etiqueta").expect("fijar fuente");
+        assert_eq!(letras::offset(&conn, 1).expect("offset"), -350);
+        assert_eq!(
+            letras::fuente_preferida(&conn, 1).expect("fuente"),
+            Some("etiqueta".to_string())
+        );
+        // Conserva el offset al fijar de nuevo la fuente y viceversa.
+        letras::fijar_fuente(&conn, 1, "fichero").expect("fijar fuente 2");
+        assert_eq!(letras::offset(&conn, 1).expect("offset"), -350);
+        letras::fijar_offset(&conn, 1, 40_000).expect("acotar");
+        assert_eq!(letras::offset(&conn, 1).expect("offset"), 30_000);
+        assert_eq!(
+            letras::fuente_preferida(&conn, 1).expect("fuente"),
+            Some("fichero".to_string())
         );
     }
 }

@@ -8,6 +8,7 @@ pub enum Accion {
     SalirInmediato,
     Cerrar,
     Ayuda,
+    AlternarEcualizador,
     IrA(Vista),
     AlternarCola,
     FocoSiguiente,
@@ -74,8 +75,9 @@ pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
     match tecla.code {
         KeyCode::Char(caracter) => match caracter {
             'q' => Some(Accion::Salir),
-            '1'..='8' => Vista::desde_numero(caracter as usize - '0' as usize).map(Accion::IrA),
+            '1'..='9' => Vista::desde_numero(caracter as usize - '0' as usize).map(Accion::IrA),
             '?' => Some(Accion::Ayuda),
+            'E' => Some(Accion::AlternarEcualizador),
             'c' => Some(Accion::AlternarCola),
             't' => Some(Accion::RecargarTema),
             'j' => Some(Accion::Abajo),
@@ -171,6 +173,14 @@ mod pruebas {
         assert_eq!(
             traducir(&tecla(KeyCode::Char('8'))),
             Some(Accion::IrA(Vista::Radio))
+        );
+        assert_eq!(
+            traducir(&tecla(KeyCode::Char('9'))),
+            Some(Accion::IrA(Vista::Letras))
+        );
+        assert_eq!(
+            traducir(&tecla(KeyCode::Char('E'))),
+            Some(Accion::AlternarEcualizador)
         );
         assert_eq!(traducir(&tecla(KeyCode::Char('?'))), Some(Accion::Ayuda));
     }
