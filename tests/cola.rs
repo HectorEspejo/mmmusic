@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use mmmusic::biblioteca::escaner::{self, ModoEscaneo};
 use mmmusic::biblioteca::modelos::{ElementoCola, PistaResumen};
 use mmmusic::biblioteca::{bd, consultas};
+use mmmusic::config::ConfigEcualizador;
 use mmmusic::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use mmmusic::reproductor::cola::Cola;
 use mmmusic::reproductor::estado::{Estado, Repeticion};
@@ -121,8 +122,15 @@ fn reproduce_persiste_y_restaura_la_cola() {
         .map(ElementoCola::Pista)
         .collect();
     drop(conn);
-    let (manejo, _watch) = reproductor::lanzar(ruta_bd.clone(), 70, 15, tx, tx_scrobbling)
-        .expect("lanzar reproductor");
+    let (manejo, _watch) = reproductor::lanzar(
+        ruta_bd.clone(),
+        70,
+        15,
+        ConfigEcualizador::default(),
+        tx,
+        tx_scrobbling,
+    )
+    .expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
         elementos,
         indice: 1,
@@ -186,8 +194,15 @@ fn tres_fallos_seguidos_pasan_a_detenido() {
 
     let (tx, rx) = mpsc::channel();
     let (tx_scrobbling, _rx_scrobbling) = mpsc::channel();
-    let (manejo, _watch) =
-        reproductor::lanzar(ruta_bd, 50, 15, tx, tx_scrobbling).expect("lanzar reproductor");
+    let (manejo, _watch) = reproductor::lanzar(
+        ruta_bd,
+        50,
+        15,
+        ConfigEcualizador::default(),
+        tx,
+        tx_scrobbling,
+    )
+    .expect("lanzar reproductor");
     manejo.enviar(ComandoReproductor::ReemplazarCola {
         elementos: vec![elemento(1), elemento(2), elemento(3)],
         indice: 0,

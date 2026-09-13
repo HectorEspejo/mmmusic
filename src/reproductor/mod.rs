@@ -17,6 +17,9 @@ use self::estado::{Estado, EstadoReproduccion, EstadoStream, Repeticion};
 use self::mpv::{EventoMpv, RazonFin, ReproductorMpv, Valor};
 use crate::biblioteca::modelos::{ElementoCola, EmisoraResumen};
 use crate::biblioteca::{bd, consultas};
+use crate::config::{ActivoAlArrancar, ConfigEcualizador};
+use crate::ecualizador::replaygain::{self, ModoReplayGain, Propiedad};
+use crate::ecualizador::{self, BANDAS, ComandoEq, EstadoEq, acotar_db, acotar_preamp, cadena};
 use crate::eventos::{AppEvento, NivelAviso};
 use crate::radio::icy;
 use crate::radio::reconexion::PlanReconexion;
@@ -25,12 +28,13 @@ use crate::scrobbling::regla;
 
 const TICK_REPRODUCTOR: Duration = Duration::from_millis(50);
 const INTERVALO_PUBLICACION: Duration = Duration::from_millis(250);
+const DEBOUNCE_EQ: Duration = Duration::from_millis(500);
 const MAX_FALLOS_SEGUIDOS: u32 = 3;
 const UMBRAL_SALTO_MS: i64 = 1500;
 const UMBRAL_SCROBBLE_ICY_MS: i64 = 30_000;
 const PAUSA_MAXIMA_STREAM: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ComandoReproductor {
     ReemplazarCola {
         elementos: Vec<ElementoCola>,
@@ -72,6 +76,7 @@ pub enum ComandoReproductor {
     FijarRepeticion {
         modo: Repeticion,
     },
+    Ecualizador(ComandoEq),
     Apagar,
 }
 
@@ -101,6 +106,7 @@ pub fn lanzar(
     ruta_bd: PathBuf,
     volumen_inicial: u8,
     espera_conexion_s: u64,
+    config_eq: ConfigEcualizador,
     tx_app: Sender<AppEvento>,
     tx_scrobbling: Sender<ComandoScrobbling>,
 ) -> Result<(ManejoReproductor, watch::Receiver<EstadoReproduccion>)> {
@@ -163,6 +169,7 @@ pub fn lanzar(
                 tx_scrobbling,
                 posicion_ms,
                 Duration::from_secs(espera_conexion_s.max(1)),
+                config_eq,
             ) {
                 Ok(reproductor) => reproductor,
                 Err(error) => {
@@ -217,6 +224,9 @@ struct ReproductorInterno {
     cache_segundos: f32,
     buffering_actual: Option<i64>,
     ultimo_error_stream: Option<String>,
+    config_eq: ConfigEcualizador,
+    eq_instalada: bool,
+    eq_pendiente_desde: Option<Instant>,
 }
 
 impl ReproductorInterno {
@@ -233,6 +243,7 @@ impl ReproductorInterno {
         tx_scrobbling: Sender<ComandoScrobbling>,
         posicion_restauracion_ms: i64,
         espera_conexion: Duration,
+        config_eq: ConfigEcualizador,
     ) -> Result<Self> {
         let conn = bd::abrir_y_migrar(&ruta_bd)?;
         let mut mpv = ReproductorMpv::nuevo(estado.volumen)?;
@@ -240,7 +251,7 @@ impl ReproductorInterno {
         mpv.fijar_despertador(move || {
             let _ = tx_despertar.send(());
         });
-        Ok(Self {
+        let mut interno = Self {
             mpv,
             cola,
             estado,
@@ -274,7 +285,70 @@ impl ReproductorInterno {
             cache_segundos: 0.0,
             buffering_actual: None,
             ultimo_error_stream: None,
-        })
+            config_eq,
+            eq_instalada: false,
+            eq_pendiente_desde: None,
+        };
+        interno.inicializar_eq()?;
+        Ok(interno)
+    }
+
+    /// Restaura el EQ y ReplayGain desde AJUSTES (sembrados desde la
+    /// configuración al arrancar) y aplica lo necesario a mpv.
+    fn inicializar_eq(&mut self) -> Result<()> {
+        let activo_guardado =
+            consultas::ajustes::leer_bool(&self.conn, "eq_activo")?.unwrap_or(false);
+        let activo = match self.config_eq.activo_al_arrancar {
+            ActivoAlArrancar::Si => true,
+            ActivoAlArrancar::No => false,
+            ActivoAlArrancar::Recordar => activo_guardado,
+        };
+        let limitador = consultas::ajustes::leer_bool(&self.conn, "eq_limitador")?
+            .unwrap_or(self.config_eq.limitador);
+        let replaygain = consultas::ajustes::leer(&self.conn, "replaygain_modo")?
+            .and_then(|valor| ModoReplayGain::desde_str(&valor))
+            .unwrap_or(self.config_eq.replaygain);
+        let replaygain_preamp = consultas::ajustes::leer(&self.conn, "replaygain_preamp_db")?
+            .and_then(|valor| valor.parse::<f32>().ok())
+            .unwrap_or(self.config_eq.replaygain_preamp_db as f32);
+        let preamp = consultas::ajustes::leer(&self.conn, "eq_preamp_db")?
+            .and_then(|valor| valor.parse::<f32>().ok())
+            .map(acotar_preamp)
+            .unwrap_or(0.0);
+        let ganancias = consultas::ajustes::leer(&self.conn, "eq_ganancias")?
+            .and_then(|valor| ecualizador::presets::parsear_ganancias(&valor))
+            .map(|ganancias| std::array::from_fn(|indice| acotar_db(ganancias[indice])))
+            .unwrap_or([0.0; BANDAS]);
+        let mut preset = None;
+        if let Some(id) = consultas::ajustes::leer(&self.conn, "eq_preset_id")?
+            .and_then(|valor| valor.trim().parse::<i64>().ok())
+            && let Some(obtenido) = consultas::presets_eq::obtener(&self.conn, id)?
+        {
+            preset = Some((id, obtenido.nombre));
+        }
+        let disponible = self.mpv.lavfi_disponible();
+        self.estado.eq = EstadoEq {
+            activo: activo && disponible,
+            ganancias,
+            preamp_db: preamp,
+            limitador,
+            preset,
+            replaygain,
+            replaygain_preamp_db: acotar_preamp(replaygain_preamp),
+            disponible,
+            tiene_replaygain: false,
+        };
+        self.aplicar_replaygain();
+        if self.estado.eq.activo {
+            self.instalar_cadena()?;
+        }
+        if !disponible && activo_guardado {
+            self.marcar_eq_pendiente();
+        }
+        if activo != activo_guardado {
+            self.marcar_eq_pendiente();
+        }
+        Ok(())
     }
 
     fn ejecutar(&mut self) {
@@ -483,9 +557,227 @@ impl ReproductorInterno {
                 self.persistir();
                 self.publicar(true);
             }
+            ComandoReproductor::Ecualizador(comando) => self.ejecutar_eq(comando)?,
             ComandoReproductor::Apagar => {}
         }
         Ok(())
+    }
+
+    fn ejecutar_eq(&mut self, comando: ComandoEq) -> Result<()> {
+        match comando {
+            ComandoEq::Activar(activo) => {
+                self.estado.eq.activo = activo;
+                if activo {
+                    self.instalar_cadena()?;
+                } else {
+                    self.quitar_cadena();
+                }
+            }
+            ComandoEq::Banda { indice, db } => {
+                if indice < BANDAS {
+                    let db = acotar_db(db);
+                    self.estado.eq.ganancias[indice] = db;
+                    self.estado.eq.preset = None;
+                    if self.estado.eq.activo {
+                        self.aplicar_banda(indice, db);
+                    }
+                }
+            }
+            ComandoEq::Preamp(db) => {
+                let db = acotar_preamp(db);
+                self.estado.eq.preamp_db = db;
+                self.estado.eq.preset = None;
+                if self.estado.eq.activo {
+                    self.aplicar_preamp(db);
+                }
+            }
+            ComandoEq::Limitador(activo) => {
+                self.estado.eq.limitador = activo;
+                if self.estado.eq.activo {
+                    self.instalar_cadena()?;
+                }
+            }
+            ComandoEq::Preset(id) => {
+                if let Some(preset) = consultas::presets_eq::obtener(&self.conn, id)? {
+                    self.estado.eq.ganancias =
+                        std::array::from_fn(|indice| acotar_db(preset.ganancias[indice]));
+                    self.estado.eq.preamp_db = acotar_preamp(preset.preamp_db);
+                    self.estado.eq.preset = Some((id, preset.nombre));
+                    self.estado.eq.activo = true;
+                    self.instalar_cadena()?;
+                }
+            }
+            ComandoEq::Restablecer => {
+                self.aplicar_plano()?;
+            }
+            ComandoEq::ReplayGain(modo) => {
+                self.estado.eq.replaygain = modo;
+                self.aplicar_replaygain();
+            }
+            ComandoEq::ReplayGainPreamp(db) => {
+                self.estado.eq.replaygain_preamp_db = acotar_preamp(db);
+                self.aplicar_replaygain();
+            }
+        }
+        self.marcar_eq_pendiente();
+        self.publicar(true);
+        Ok(())
+    }
+
+    /// Restablece todas las bandas y el preamp con el preset integrado «Plano».
+    fn aplicar_plano(&mut self) -> Result<()> {
+        let integrado = consultas::presets_eq::listar(&self.conn)?
+            .into_iter()
+            .find(|preset| preset.integrado && preset.nombre == "Plano");
+        match integrado {
+            Some(preset) => {
+                self.estado.eq.ganancias =
+                    std::array::from_fn(|indice| acotar_db(preset.ganancias[indice]));
+                self.estado.eq.preamp_db = acotar_preamp(preset.preamp_db);
+                self.estado.eq.preset = Some((preset.id, preset.nombre));
+            }
+            None => {
+                self.estado.eq.ganancias = [0.0; BANDAS];
+                self.estado.eq.preamp_db = 0.0;
+                self.estado.eq.preset = None;
+            }
+        }
+        if self.estado.eq.activo {
+            self.instalar_cadena()?;
+        }
+        Ok(())
+    }
+
+    /// Instala la cadena completa, o la vacía si la curva es un bypass.
+    fn instalar_cadena(&mut self) -> Result<()> {
+        if !self.estado.eq.disponible {
+            return Ok(());
+        }
+        if cadena::es_bypass(&self.estado.eq) {
+            self.quitar_cadena();
+            return Ok(());
+        }
+        let texto = cadena::construir(&self.estado.eq);
+        match self.mpv.fijar_af(&texto) {
+            Ok(()) => {
+                self.eq_instalada = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.eq_no_disponible(&error);
+                Ok(())
+            }
+        }
+    }
+
+    fn quitar_cadena(&mut self) {
+        if self.eq_instalada {
+            let _ = self.mpv.fijar_af("");
+            self.eq_instalada = false;
+        }
+    }
+
+    fn aplicar_banda(&mut self, indice: usize, db: f32) {
+        if !self.eq_instalada {
+            let _ = self.instalar_cadena();
+            return;
+        }
+        let (etiqueta, comando, valor, filtro) = cadena::comando_banda(indice, db);
+        if let Err(error) = self.mpv.af_command(&etiqueta, comando, &valor, filtro) {
+            warn!("af-command falló ({error:#}); se reconstruye la cadena");
+            let _ = self.instalar_cadena();
+        }
+    }
+
+    fn aplicar_preamp(&mut self, db: f32) {
+        if !self.eq_instalada {
+            let _ = self.instalar_cadena();
+            return;
+        }
+        let (etiqueta, comando, valor, filtro) = cadena::comando_preamp(db);
+        if let Err(error) = self.mpv.af_command(etiqueta, comando, &valor, filtro) {
+            warn!("af-command falló ({error:#}); se reconstruye la cadena");
+            let _ = self.instalar_cadena();
+        }
+    }
+
+    /// Aplica ReplayGain siempre (con o sin EQ) y en todas las pistas.
+    fn aplicar_replaygain(&mut self) {
+        let propiedades = replaygain::propiedades(
+            self.estado.eq.replaygain,
+            self.estado.eq.replaygain_preamp_db,
+        );
+        for (nombre, valor) in propiedades {
+            let resultado = match valor {
+                Propiedad::Texto(texto) => self.mpv.fijar_texto(nombre, texto),
+                Propiedad::Numero(numero) => self.mpv.fijar_numero(nombre, numero),
+            };
+            if let Err(error) = resultado {
+                warn!("no se pudo fijar {nombre}: {error:#}");
+            }
+        }
+    }
+
+    fn eq_no_disponible(&mut self, error: &anyhow::Error) {
+        warn!("el ecualizador no está disponible: {error:#}");
+        self.estado.eq.activo = false;
+        self.estado.eq.disponible = false;
+        self.eq_instalada = false;
+        let _ = self.mpv.fijar_af("");
+        let _ = self.tx_app.send(AppEvento::Notificacion(
+            NivelAviso::Error,
+            "Ecualizador no disponible".to_string(),
+        ));
+    }
+
+    fn marcar_eq_pendiente(&mut self) {
+        self.eq_pendiente_desde = Some(Instant::now());
+    }
+
+    fn persistir_eq_si_toca(&mut self) {
+        if self
+            .eq_pendiente_desde
+            .is_some_and(|inicio| inicio.elapsed() >= DEBOUNCE_EQ)
+        {
+            self.persistir_eq();
+        }
+    }
+
+    fn persistir_eq(&mut self) {
+        let preset = self
+            .estado
+            .eq
+            .preset
+            .as_ref()
+            .map(|(id, _)| id.to_string())
+            .unwrap_or_default();
+        let ajustes = [
+            ("eq_activo", u8::from(self.estado.eq.activo).to_string()),
+            ("eq_preset_id", preset),
+            (
+                "eq_ganancias",
+                ecualizador::presets::formatear_ganancias(&self.estado.eq.ganancias),
+            ),
+            ("eq_preamp_db", format!("{:.1}", self.estado.eq.preamp_db)),
+            (
+                "eq_limitador",
+                u8::from(self.estado.eq.limitador).to_string(),
+            ),
+            (
+                "replaygain_modo",
+                self.estado.eq.replaygain.como_str().to_string(),
+            ),
+            (
+                "replaygain_preamp_db",
+                format!("{:.1}", self.estado.eq.replaygain_preamp_db),
+            ),
+        ];
+        for (clave, valor) in ajustes {
+            if let Err(error) = consultas::ajustes::escribir(&self.conn, clave, &valor) {
+                warn!("no se pudo persistir el ajuste {clave}: {error:#}");
+            }
+        }
+        self.eq_pendiente_desde = None;
     }
 
     fn procesar_eventos(&mut self) {
@@ -606,6 +898,7 @@ impl ReproductorInterno {
                 self.estado.elemento = Some(ElementoCola::Pista(pista.clone()));
                 self.estado.stream = None;
                 self.estado.titulo_icy = None;
+                self.estado.eq.tiene_replaygain = tiene_etiquetas_replaygain(&self.mpv);
                 self.estado.duracion_ms = pista.duracion_ms;
                 if self.posicion_restauracion_ms > 0 {
                     let objetivo = self
@@ -626,6 +919,7 @@ impl ReproductorInterno {
             }
             ElementoCola::Emisora(emisora) => {
                 self.estado.elemento = Some(ElementoCola::Emisora(emisora));
+                self.estado.eq.tiene_replaygain = false;
                 self.estado.estado = if self.mpv.bandera("pause").unwrap_or(false) {
                     Estado::Pausado
                 } else {
@@ -686,6 +980,7 @@ impl ReproductorInterno {
     }
 
     fn tick(&mut self) {
+        self.persistir_eq_si_toca();
         if self.ultimo_tick.elapsed() < INTERVALO_PUBLICACION {
             return;
         }
@@ -1179,6 +1474,7 @@ impl ReproductorInterno {
         self.estado.tiempo_escuchando_ms = 0;
         self.estado.codec = None;
         self.estado.bitrate_kbps = None;
+        self.estado.eq.tiene_replaygain = false;
         self.historial_id = None;
         self.historial_inicio = None;
         self.precargada = None;
@@ -1218,7 +1514,7 @@ impl ReproductorInterno {
         }
     }
 
-    fn guardar_estado_final(&self) {
+    fn guardar_estado_final(&mut self) {
         if let Err(error) = consultas::ajustes::escribir(
             &self.conn,
             "cola_ms",
@@ -1227,6 +1523,7 @@ impl ReproductorInterno {
             warn!("no se pudo persistir la posición: {error:#}");
         }
         self.persistir();
+        self.persistir_eq();
     }
 
     fn publicar(&mut self, forzar: bool) {
@@ -1241,4 +1538,12 @@ impl ReproductorInterno {
             .send(AppEvento::Reproductor(Box::new(self.estado.clone())));
         self.ultima_publicacion = Instant::now();
     }
+}
+
+fn tiene_etiquetas_replaygain(mpv: &ReproductorMpv) -> bool {
+    mpv.cadena("metadata/by-key/REPLAYGAIN_TRACK_GAIN")
+        .is_some()
+        || mpv
+            .cadena("metadata/by-key/REPLAYGAIN_ALBUM_GAIN")
+            .is_some()
 }

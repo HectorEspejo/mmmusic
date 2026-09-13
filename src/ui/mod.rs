@@ -158,6 +158,9 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado) {
             vistas::cola::dibujar(frame, app, cola);
         }
     }
+    if app.ecualizador_visible {
+        componentes::ecualizador::dibujar(frame, app, cuerpo);
+    }
     barra_inferior::dibujar(frame, app, barra, compacto_alto);
     componentes::notificacion::dibujar(frame, app, area);
     if app.ayuda_visible {

@@ -8,13 +8,16 @@ vim. Cliente: proyecto personal de Hector (4d3).
 Stack: Rust 2024, ratatui + crossterm, libmpv (`libmpv2`), rusqlite `bundled`,
 lofty, ratatui-image, mpris-server (tokio solo en el hilo MPRIS), serde + toml,
 notify, tracing, ureq (rustls) en el hilo de scrobbling, serde_json, md5, clap,
-pipewire (libpipewire-0.3) en el hilo de captura, realfft, canvas braille de ratatui.
+pipewire (libpipewire-0.3) en el hilo de captura, realfft, canvas braille de ratatui,
+dns-lookup.
 
 ## Documentación del proyecto
 
-La documentación funcional vive en `docs/` (plano, sin subcarpetas por fase):
+La documentación funcional vive en `docs/faseN/` (una carpeta por fase; el
+maestro en `docs/`):
 
-- `mmmusic-maestro.md` — visión global, mapa de fases y estado del proyecto
+- `docs/mmmusic-maestro.md` — visión global, mapa de fases y estado del proyecto
+- `docs/faseN/mmmusic-faseN-{informe,checklist,prompt,implementacion}.md` — documentos de cada fase
 - `mmmusic-fase1-informe.md` — especificación funcional completa de la fase
 - `mmmusic-fase1-checklist.md` — alcance verificable de la fase
 - `mmmusic-fase1-implementacion.md` — informe de implementación de la fase 1 (cerrada)
@@ -26,7 +29,10 @@ La documentación funcional vive en `docs/` (plano, sin subcarpetas por fase):
 - `mmmusic-fase3-implementacion.md` — informe de implementación de la fase 3 (cerrada)
 - `mmmusic-fase5-informe.md` — especificación funcional completa de la fase 5 (la fase 4 no está especificada; no existe)
 - `mmmusic-fase5-checklist.md` — alcance verificable de la fase 5
-- `mmmusic-fase5-implementacion.md` — informe de implementación (lo escribes tú)
+- `mmmusic-fase5-implementacion.md` — informe de implementación de la fase 5 (cerrada)
+- `mmmusic-fase4-informe.md` — especificación funcional completa de la fase 4
+- `mmmusic-fase4-checklist.md` — alcance verificable de la fase 4
+- `mmmusic-fase4-implementacion.md` — informe de implementación (lo escribes tú)
 
 El informe de fase manda sobre tu criterio: si algo te parece incorrecto o
 incompleto, no lo cambies por tu cuenta — impleméntalo como está o párate y
@@ -83,8 +89,23 @@ coméntalo con el desarrollador.
   `pista_id` / `emisora_id` por fila, validado en código. Una "escucha" es una
   canción reconocida, nunca una conexión.
 - Recrear tablas en migraciones (SQLite no permite quitar `NOT NULL`): en
-  transacción, `INSERT … SELECT`, y copia previa `mmmusic.db.pre-NNN` borrada
-  en el siguiente arranque correcto.
+  transacción, `INSERT … SELECT`, y copia previa `mmmusic.db.pre-NNN` (tras
+  `wal_checkpoint(TRUNCATE)`) borrada en el siguiente arranque correcto.
+  Toda migración corre con `foreign_keys = OFF` y termina con
+  `PRAGMA foreign_key_check` antes de confirmar.
+- Ningún módulo construye su propio cliente `ureq`: todas las peticiones pasan
+  por `red/cliente.rs`, que aplica la allowlist. No implementes protocolos de
+  red a mano (DNS, HTTP…) cuando exista un crate pequeño y auditado.
+- Filtros de audio de mpv: cadena etiquetada (`@pre`, `@eqN`, `@lim`) instalada
+  una vez y ajustada con `af-command`; reconstruir solo cuando no hay comando
+  en caliente. `af = ""` cuando todo está plano.
+- mmmusic nunca escribe en la biblioteca del usuario (audio, `.lrc`); offsets,
+  colores y presets van a la base de datos o a la carpeta de datos.
+- Fuentes de datos externas (letras y similares) se implementan como traits
+  enchufables con resolución por orden y caché; la vista no conoce la fuente.
+- Nombre del proyecto y de sus ficheros: `mmmusic` con tres emes
+  (`mmmusic.db`, `mmmusic.log`, `mmmusic.db.pre-NNN`). Revisa que no se cuele
+  `mmusic`.
 - Secretos: viven solo en `~/.config/mmmusic/credenciales.toml` (permisos 600).
   Nunca los escribas en logs, toasts, `error_msg`, tests, fixtures ni en el
   informe de implementación.

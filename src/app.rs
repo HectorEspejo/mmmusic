@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -14,10 +14,14 @@ use crate::biblioteca::consultas::{OrdenAlbumes, OrdenPistas};
 use crate::biblioteca::escaner::{self, ManejoEscaneo};
 use crate::biblioteca::modelos::{
     AlbumResumen, ArtistaResumen, DetalleAlbum, DetalleArtista, ElementoCola, EmisoraResumen,
-    Inicio, PistaListado, PlaylistResumen, TituloEmisora,
+    Inicio, PistaListado, PistaResumen, PlaylistResumen, PresetEq, TituloEmisora,
 };
 use crate::config::{Config, FuentePaleta, ModoIconos};
+use crate::ecualizador::ComandoEq;
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso};
+use crate::letras::{
+    self, Fuente as FuenteLetra, Letra, ManejoLetras, PeticionLetras, Resolucion, sincronia,
+};
 use crate::radio::icy;
 use crate::radio::radiobrowser::{self, ComandoDirectorio, EmisoraDirectorio, ManejoDirectorio};
 use crate::reproductor::estado::{Estado, EstadoReproduccion};
@@ -40,6 +44,7 @@ const DURACION_TOAST: Duration = Duration::from_secs(3);
 const PAGINA_SALTOS: usize = 10;
 const TICK_BASE: Duration = Duration::from_millis(250);
 const TICK_DEGRADADO: Duration = Duration::from_millis(66);
+const TICK_LETRAS: Duration = Duration::from_millis(100);
 const DURACION_CABECERA: Duration = Duration::from_secs(3);
 const DURACION_TRANSICION_PALETA: f32 = 0.4;
 const UMBRAL_FRAME_LENTO: Duration = Duration::from_millis(33);
@@ -57,10 +62,11 @@ pub enum Vista {
     Playlists,
     Visual,
     Radio,
+    Letras,
 }
 
 impl Vista {
-    pub const TODAS: [Vista; 8] = [
+    pub const TODAS: [Vista; 9] = [
         Vista::Inicio,
         Vista::Buscar,
         Vista::Artistas,
@@ -69,6 +75,7 @@ impl Vista {
         Vista::Playlists,
         Vista::Visual,
         Vista::Radio,
+        Vista::Letras,
     ];
 
     pub fn numero(self) -> usize {
@@ -81,6 +88,7 @@ impl Vista {
             Vista::Playlists => 6,
             Vista::Visual => 7,
             Vista::Radio => 8,
+            Vista::Letras => 9,
         }
     }
 
@@ -94,6 +102,7 @@ impl Vista {
             Vista::Playlists => "Playlists",
             Vista::Visual => "Visual",
             Vista::Radio => "Radio",
+            Vista::Letras => "Letras",
         }
     }
 
@@ -315,6 +324,8 @@ pub enum AccionDialogo {
     },
     ImportarRadio,
     ExportarRadioConfirmado,
+    GuardarPresetEq,
+    EliminarPresetEq(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +364,39 @@ pub struct Aviso {
 pub struct ProgresoEscaneo {
     pub procesadas: usize,
     pub total: usize,
+}
+
+/// Estado de la vista Letras y de su superposición en el modo visual.
+#[derive(Debug, Clone)]
+pub struct EstadoLetras {
+    pub pista_id: Option<i64>,
+    pub cargando: bool,
+    /// Resoluciones por pista; se invalida al terminar un escaneo.
+    pub cache: HashMap<i64, Resolucion>,
+    pub letra: Letra,
+    /// Fuente elegida por el usuario (`s`), si la hay.
+    pub preferida: Option<FuenteLetra>,
+    pub offset_usuario_ms: i64,
+    pub seleccion: usize,
+    pub manual_hasta: Option<Instant>,
+    /// Rutas exactas donde se buscó (para el mensaje de "sin letra").
+    pub rutas: Vec<String>,
+}
+
+impl Default for EstadoLetras {
+    fn default() -> Self {
+        Self {
+            pista_id: None,
+            cargando: false,
+            cache: HashMap::new(),
+            letra: Letra::Ninguna { rutas: Vec::new() },
+            preferida: None,
+            offset_usuario_ms: 0,
+            seleccion: 0,
+            manual_hasta: None,
+            rutas: Vec::new(),
+        }
+    }
 }
 
 impl ProgresoEscaneo {
@@ -485,6 +529,14 @@ pub struct AppEstado {
     pub radio_titulos: Vec<TituloEmisora>,
     pub radio_titulos_ok: HashSet<i64>,
     pub directorio: Option<ManejoDirectorio>,
+    pub presets_eq: Vec<PresetEq>,
+    pub ecualizador_visible: bool,
+    pub eq_banda: usize,
+    pub eq_foco_presets: bool,
+    pub eq_seleccion_preset: usize,
+    pub letras: EstadoLetras,
+    pub letras_superpuestas: bool,
+    manejo_letras: Option<ManejoLetras>,
 }
 
 impl AppEstado {
@@ -493,6 +545,7 @@ impl AppEstado {
         let visuales = visuales::registro(config.interfaz.iconos == ModoIconos::Ascii);
         let paleta_visual = PaletaVisual::desde_tema(&paleta);
         let fuente_paleta = config.visuales.paleta;
+        let letras_superpuestas = config.letras.superpuestas;
         let estado_reproductor = EstadoReproduccion {
             volumen: config.reproductor.volumen_inicial,
             ..EstadoReproduccion::default()
@@ -580,6 +633,14 @@ impl AppEstado {
             radio_titulos: Vec::new(),
             radio_titulos_ok: HashSet::new(),
             directorio: None,
+            presets_eq: Vec::new(),
+            ecualizador_visible: false,
+            eq_banda: 0,
+            eq_foco_presets: false,
+            eq_seleccion_preset: 0,
+            letras: EstadoLetras::default(),
+            letras_superpuestas,
+            manejo_letras: None,
         }
     }
 
@@ -622,6 +683,423 @@ impl AppEstado {
             self.pestana_radio = pestana;
         }
         Ok(())
+    }
+
+    pub fn refrescar_presets(&mut self, ctx: &ContextoApp<'_>) {
+        match consultas::presets_eq::listar(ctx.conn) {
+            Ok(presets) => {
+                self.presets_eq = presets;
+                self.eq_seleccion_preset = if self.presets_eq.is_empty() {
+                    0
+                } else {
+                    self.eq_seleccion_preset.min(self.presets_eq.len() - 1)
+                };
+            }
+            Err(error) => self.notificar(
+                NivelAviso::Error,
+                format!("No se pudieron leer los presets: {error:#}"),
+            ),
+        }
+    }
+
+    fn enviar_eq(&self, ctx: &ContextoApp<'_>, comando: ComandoEq) {
+        ctx.reproductor
+            .enviar(ComandoReproductor::Ecualizador(comando));
+    }
+
+    fn mover_banda(&mut self, delta: isize) {
+        self.eq_banda = (self.eq_banda as isize + delta).clamp(0, 10) as usize;
+    }
+
+    fn ajustar_banda(&mut self, ctx: &ContextoApp<'_>, delta: f32) {
+        let eq = &self.estado_reproductor.eq;
+        if self.eq_banda == 0 {
+            self.enviar_eq(ctx, ComandoEq::Preamp(eq.preamp_db + delta));
+        } else {
+            let indice = self.eq_banda - 1;
+            self.enviar_eq(
+                ctx,
+                ComandoEq::Banda {
+                    indice,
+                    db: eq.ganancias[indice] + delta,
+                },
+            );
+        }
+    }
+
+    fn fijar_banda(&mut self, ctx: &ContextoApp<'_>, db: f32) {
+        if self.eq_banda == 0 {
+            self.enviar_eq(ctx, ComandoEq::Preamp(db));
+        } else {
+            self.enviar_eq(
+                ctx,
+                ComandoEq::Banda {
+                    indice: self.eq_banda - 1,
+                    db,
+                },
+            );
+        }
+    }
+
+    /// Atiende el overlay del ecualizador. Mientras está abierto captura todas
+    /// las teclas (salvo el diálogo, que se atiende antes).
+    fn tecla_en_ecualizador(&mut self, tecla: &KeyEvent, ctx: &ContextoApp<'_>) -> bool {
+        if !self.ecualizador_visible {
+            return false;
+        }
+        if tecla.modifiers.contains(KeyModifiers::CONTROL) {
+            return true;
+        }
+        match tecla.code {
+            KeyCode::Esc | KeyCode::Char('E') => self.ecualizador_visible = false,
+            KeyCode::Char('h') => self.mover_banda(-1),
+            KeyCode::Char('l') => self.mover_banda(1),
+            KeyCode::Char('j') => self.ajustar_banda(ctx, -1.0),
+            KeyCode::Char('k') => self.ajustar_banda(ctx, 1.0),
+            KeyCode::Char('J') => self.ajustar_banda(ctx, -0.5),
+            KeyCode::Char('K') => self.ajustar_banda(ctx, 0.5),
+            KeyCode::Char('0') => self.fijar_banda(ctx, 0.0),
+            KeyCode::Char('R') => self.enviar_eq(ctx, ComandoEq::Restablecer),
+            KeyCode::Tab => self.eq_foco_presets = !self.eq_foco_presets,
+            KeyCode::Char('e') => {
+                let activo = !self.estado_reproductor.eq.activo;
+                self.enviar_eq(ctx, ComandoEq::Activar(activo));
+            }
+            KeyCode::Char('x') => {
+                let limitador = !self.estado_reproductor.eq.limitador;
+                self.enviar_eq(ctx, ComandoEq::Limitador(limitador));
+            }
+            KeyCode::Char('g') => {
+                let modo = self.estado_reproductor.eq.replaygain.ciclar();
+                self.enviar_eq(ctx, ComandoEq::ReplayGain(modo));
+            }
+            KeyCode::Char('N') => {
+                self.dialogo = Some(Dialogo::Texto {
+                    titulo: "Guardar preset del ecualizador".to_string(),
+                    valor: String::new(),
+                    accion: AccionDialogo::GuardarPresetEq,
+                });
+            }
+            KeyCode::Char('D') => {
+                let preset = self
+                    .presets_eq
+                    .get(self.eq_seleccion_preset)
+                    .filter(|preset| !preset.integrado)
+                    .map(|preset| (preset.id, preset.nombre.clone()));
+                if self.eq_foco_presets
+                    && let Some((id, nombre)) = preset
+                {
+                    self.dialogo = Some(Dialogo::Confirmacion {
+                        titulo: "Eliminar preset".to_string(),
+                        mensaje: format!("¿Eliminar «{nombre}»? No se puede deshacer."),
+                        accion: AccionDialogo::EliminarPresetEq(id),
+                    });
+                }
+            }
+            KeyCode::Enter => {
+                let preset = self
+                    .presets_eq
+                    .get(self.eq_seleccion_preset)
+                    .map(|preset| preset.id);
+                if self.eq_foco_presets
+                    && let Some(id) = preset
+                {
+                    self.enviar_eq(ctx, ComandoEq::Preset(id));
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    pub fn aplicar_ajustes_letras(&mut self, conn: &Connection) -> anyhow::Result<()> {
+        if let Some(superpuestas) = consultas::ajustes::leer_bool(conn, "letras_superpuestas")? {
+            self.letras_superpuestas = superpuestas;
+        }
+        Ok(())
+    }
+
+    pub fn conectar_letras(&mut self, manejo: ManejoLetras) {
+        self.manejo_letras = Some(manejo);
+    }
+
+    pub fn apagar_letras(&mut self) {
+        if let Some(manejo) = self.manejo_letras.take() {
+            manejo.apagar();
+        }
+    }
+
+    /// La letra solo se resuelve con la vista abierta o la superposición
+    /// activa; el resto del tiempo no se lee nada.
+    fn letras_necesarias(&self) -> bool {
+        self.vista == Vista::Letras || (self.modo_visual.is_some() && self.letras_superpuestas)
+    }
+
+    pub fn asegurar_letras(&mut self, ctx: &ContextoApp<'_>) {
+        if !self.letras_necesarias() {
+            return;
+        }
+        let Some(pista) = self.estado_reproductor.pista_actual().cloned() else {
+            self.letras.pista_id = None;
+            self.letras.cargando = false;
+            self.letras.letra = Letra::Ninguna { rutas: Vec::new() };
+            return;
+        };
+        if self.letras.pista_id == Some(pista.id) {
+            return;
+        }
+        self.resolver_letra_pista(&pista, ctx);
+    }
+
+    fn resolver_letra_pista(&mut self, pista: &PistaResumen, ctx: &ContextoApp<'_>) {
+        let pista_id = pista.id;
+        let offset = consultas::letras::offset(ctx.conn, pista_id).unwrap_or(0);
+        let preferida = consultas::letras::fuente_preferida(ctx.conn, pista_id)
+            .ok()
+            .flatten()
+            .and_then(|valor| FuenteLetra::desde_str(&valor));
+        self.letras.pista_id = Some(pista_id);
+        self.letras.offset_usuario_ms = offset;
+        self.letras.preferida = preferida;
+        self.letras.seleccion = 0;
+        self.letras.manual_hasta = None;
+        if let Some(resolucion) = self.letras.cache.get(&pista_id).cloned() {
+            self.aplicar_resolucion(&resolucion, preferida);
+            self.letras.cargando = false;
+            return;
+        }
+        self.letras.cargando = true;
+        self.letras.letra = Letra::Ninguna { rutas: Vec::new() };
+        self.letras.rutas = Vec::new();
+        let carpeta = self.config.carpeta_letras();
+        match &self.manejo_letras {
+            Some(manejo) => {
+                manejo.enviar(PeticionLetras::Resolver {
+                    pista: Box::new(pista.clone()),
+                    carpeta,
+                });
+            }
+            None => {
+                let resolucion = letras::resolver(pista, &carpeta);
+                self.letras.cache.insert(pista_id, resolucion.clone());
+                self.aplicar_resolucion(&resolucion, preferida);
+                self.letras.cargando = false;
+            }
+        }
+    }
+
+    fn aplicar_resolucion(&mut self, resolucion: &Resolucion, preferida: Option<FuenteLetra>) {
+        self.letras.letra = resolucion.elegir(preferida);
+        self.letras.rutas = resolucion.rutas.clone();
+        self.letras.seleccion = self.linea_actual_letras().max(0) as usize;
+        if let Some(aviso) = resolucion
+            .fichero
+            .as_ref()
+            .and_then(|texto| texto.aviso.clone())
+        {
+            self.notificar(NivelAviso::Aviso, aviso);
+        }
+    }
+
+    fn manejar_letras_listas(&mut self, pista_id: i64, resolucion: Resolucion) {
+        let preferida = self.letras.preferida;
+        self.letras.cache.insert(pista_id, resolucion.clone());
+        if self.letras.pista_id == Some(pista_id) {
+            self.aplicar_resolucion(&resolucion, preferida);
+            self.letras.cargando = false;
+        }
+    }
+
+    fn invalidar_letras(&mut self, ctx: &ContextoApp<'_>) {
+        self.letras.cache.clear();
+        self.letras.pista_id = None;
+        self.asegurar_letras(ctx);
+    }
+
+    fn alternar_letras_superpuestas(&mut self, ctx: &ContextoApp<'_>) {
+        self.letras_superpuestas = !self.letras_superpuestas;
+        self.guardar_ajuste(
+            ctx,
+            "letras_superpuestas",
+            if self.letras_superpuestas { "1" } else { "0" },
+        );
+        if self.letras_superpuestas {
+            self.asegurar_letras(ctx);
+            if !self.letras.cargando && !self.letras.letra.es_sincronizada() {
+                self.notificar(NivelAviso::Aviso, "Sin letra sincronizada para superponer");
+            }
+        }
+    }
+
+    fn cambiar_fuente_letras(&mut self, ctx: &ContextoApp<'_>) {
+        let Some(pista_id) = self.letras.pista_id else {
+            return;
+        };
+        let Some(resolucion) = self.letras.cache.get(&pista_id).cloned() else {
+            return;
+        };
+        let fuentes = resolucion.fuentes();
+        if fuentes.len() < 2 {
+            return;
+        }
+        let nueva = match self.letras.letra.fuente() {
+            Some(FuenteLetra::Fichero) => FuenteLetra::Etiqueta,
+            Some(FuenteLetra::Etiqueta) => FuenteLetra::Fichero,
+            None => fuentes[0],
+        };
+        self.letras.preferida = Some(nueva);
+        if let Err(error) = consultas::letras::fijar_fuente(ctx.conn, pista_id, nueva.como_str()) {
+            self.notificar(
+                NivelAviso::Error,
+                format!("No se pudo guardar la fuente de la letra: {error:#}"),
+            );
+        }
+        self.aplicar_resolucion(&resolucion, Some(nueva));
+    }
+
+    fn ajustar_offset_letras(&mut self, ctx: &ContextoApp<'_>, delta: i64) {
+        let Some(pista_id) = self.letras.pista_id else {
+            return;
+        };
+        let nuevo = (self.letras.offset_usuario_ms + delta).clamp(-30_000, 30_000);
+        self.letras.offset_usuario_ms = nuevo;
+        if let Err(error) = consultas::letras::fijar_offset(ctx.conn, pista_id, nuevo) {
+            self.notificar(
+                NivelAviso::Error,
+                format!("No se pudo guardar el offset de la letra: {error:#}"),
+            );
+        }
+        self.notificar(NivelAviso::Info, format!("offset {nuevo} ms"));
+    }
+
+    fn letras_mover(&mut self, delta: isize) {
+        let total = self.letras.letra.lineas();
+        if total == 0 {
+            return;
+        }
+        let actual = self.letras.seleccion.min(total - 1);
+        self.letras.seleccion = (actual as isize + delta).clamp(0, total as isize - 1) as usize;
+        self.letras.manual_hasta = Some(Instant::now() + Duration::from_secs(5));
+    }
+
+    fn letras_primero(&mut self) {
+        if self.letras.letra.lineas() > 0 {
+            self.letras.seleccion = 0;
+            self.letras.manual_hasta = Some(Instant::now() + Duration::from_secs(5));
+        }
+    }
+
+    fn letras_ultimo(&mut self) {
+        let total = self.letras.letra.lineas();
+        if total > 0 {
+            self.letras.seleccion = total - 1;
+            self.letras.manual_hasta = Some(Instant::now() + Duration::from_secs(5));
+        }
+    }
+
+    fn enter_letras(&mut self, ctx: &ContextoApp<'_>) {
+        let Letra::Sincronizada {
+            lineas,
+            offset_lrc_ms,
+            ..
+        } = &self.letras.letra
+        else {
+            return;
+        };
+        let indice = self.letras.seleccion.min(lineas.len().saturating_sub(1));
+        let Some((ms, _)) = lineas.get(indice) else {
+            return;
+        };
+        let objetivo = i64::from(*ms) - offset_lrc_ms - self.letras.offset_usuario_ms;
+        ctx.reproductor.enviar(ComandoReproductor::Buscar {
+            ms: objetivo.max(0),
+            relativo: false,
+        });
+        self.letras.seleccion = indice;
+        self.letras.manual_hasta = None;
+    }
+
+    fn tick_letras(&mut self) {
+        if self
+            .letras
+            .manual_hasta
+            .is_some_and(|hasta| Instant::now() >= hasta)
+        {
+            self.letras.manual_hasta = None;
+        }
+        if self.letras.manual_hasta.is_none() {
+            let actual = self.linea_actual_letras();
+            if actual >= 0 {
+                self.letras.seleccion = actual as usize;
+            }
+        }
+    }
+
+    pub fn linea_actual_letras(&self) -> i64 {
+        let Letra::Sincronizada {
+            lineas,
+            offset_lrc_ms,
+            ..
+        } = &self.letras.letra
+        else {
+            return -1;
+        };
+        let t = self.estado_reproductor.posicion_ms + offset_lrc_ms + self.letras.offset_usuario_ms;
+        sincronia::linea_actual(lineas, t)
+    }
+
+    fn tecla_en_letras(&mut self, tecla: &KeyEvent, ctx: &ContextoApp<'_>) -> bool {
+        if self.vista != Vista::Letras || self.modo_visual.is_some() {
+            return false;
+        }
+        if tecla.modifiers.contains(KeyModifiers::CONTROL) {
+            return false;
+        }
+        if !matches!(tecla.code, KeyCode::Char('g')) {
+            self.pendiente_g = false;
+        }
+        let mayusculas = tecla.modifiers.contains(KeyModifiers::SHIFT);
+        match tecla.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.letras_mover(1);
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.letras_mover(-1);
+                true
+            }
+            KeyCode::Char('g') => {
+                if self.pendiente_g {
+                    self.pendiente_g = false;
+                    self.letras_primero();
+                } else {
+                    self.pendiente_g = true;
+                }
+                true
+            }
+            KeyCode::Char('G') => {
+                self.letras_ultimo();
+                true
+            }
+            KeyCode::Char('s') => {
+                self.cambiar_fuente_letras(ctx);
+                true
+            }
+            KeyCode::Char('(') => {
+                self.ajustar_offset_letras(ctx, if mayusculas { -500 } else { -100 });
+                true
+            }
+            KeyCode::Char(')') => {
+                self.ajustar_offset_letras(ctx, if mayusculas { 500 } else { 100 });
+                true
+            }
+            KeyCode::Enter => {
+                self.enter_letras(ctx);
+                true
+            }
+            KeyCode::Char('h') | KeyCode::Char('l') => true,
+            _ => false,
+        }
     }
 
     pub fn entrar_visual(&mut self, protector: bool) {
@@ -688,6 +1166,7 @@ impl AppEstado {
         if tecla.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
+        let mayusculas = tecla.modifiers.contains(KeyModifiers::SHIFT);
         match tecla.code {
             KeyCode::Esc | KeyCode::Char('7') => {
                 self.salir_visual();
@@ -703,6 +1182,18 @@ impl AppEstado {
             }
             KeyCode::Char(caracter @ '1'..='6') => {
                 self.saltar_visual(caracter as usize - '1' as usize, ctx);
+                true
+            }
+            KeyCode::Char('9') => {
+                self.alternar_letras_superpuestas(ctx);
+                true
+            }
+            KeyCode::Char('(') if self.letras_superpuestas => {
+                self.ajustar_offset_letras(ctx, if mayusculas { -500 } else { -100 });
+                true
+            }
+            KeyCode::Char(')') if self.letras_superpuestas => {
+                self.ajustar_offset_letras(ctx, if mayusculas { 500 } else { 100 });
                 true
             }
             KeyCode::Char('[') => {
@@ -806,14 +1297,21 @@ impl AppEstado {
     }
 
     pub fn intervalo_tick(&self) -> Duration {
-        if !self.tick_activo() {
-            return TICK_BASE;
+        let visual = if !self.tick_activo() {
+            TICK_BASE
+        } else if self.fps_degradado {
+            TICK_DEGRADADO
+        } else {
+            let fps = u64::from(self.config.visuales.fps.clamp(15, 60));
+            Duration::from_millis((1000 / fps).max(1))
+        };
+        let letras =
+            self.vista == Vista::Letras || (self.modo_visual.is_some() && self.letras_superpuestas);
+        if letras {
+            visual.min(TICK_LETRAS)
+        } else {
+            visual
         }
-        if self.fps_degradado {
-            return TICK_DEGRADADO;
-        }
-        let fps = u64::from(self.config.visuales.fps.clamp(15, 60));
-        Duration::from_millis((1000 / fps).max(1))
     }
 
     /// Analiza el anillo y prepara la paleta antes de dibujar el frame.
@@ -977,10 +1475,16 @@ impl AppEstado {
                 if self.dialogo.is_some() && self.tecla_en_dialogo(&tecla, ctx) {
                     return;
                 }
+                if self.tecla_en_ecualizador(&tecla, ctx) {
+                    return;
+                }
                 if tecla.code == KeyCode::Esc && self.cerrar_ayuda() {
                     return;
                 }
                 if self.tecla_en_visual(&tecla, ctx) {
+                    return;
+                }
+                if self.tecla_en_letras(&tecla, ctx) {
                     return;
                 }
                 if self.tecla_en_radio(&tecla, ctx) {
@@ -1003,6 +1507,7 @@ impl AppEstado {
                 self.actualizar_busqueda(ctx);
                 self.actualizar_paleta_visual();
                 self.actualizar_protector();
+                self.tick_letras();
                 if self
                     .cabecera_hasta
                     .is_some_and(|hasta| Instant::now() >= hasta)
@@ -1012,12 +1517,19 @@ impl AppEstado {
             }
             AppEvento::Reproductor(estado) => {
                 let estado = *estado;
+                let pista_anterior = self.estado_reproductor.pista_actual().map(|pista| pista.id);
                 let titulo_anterior = self.estado_reproductor.titulo_icy.clone();
                 let emisora_anterior = self
                     .estado_reproductor
                     .emisora_actual()
                     .map(|emisora| emisora.id);
                 self.estado_reproductor = estado;
+                let pista_nueva = self.estado_reproductor.pista_actual().map(|pista| pista.id);
+                if pista_nueva != pista_anterior {
+                    self.letras.pista_id = None;
+                    self.letras.cargando = false;
+                    self.asegurar_letras(ctx);
+                }
                 if self.seleccion_cola >= self.estado_reproductor.cola.len() {
                     self.seleccion_cola = self.estado_reproductor.cola.len().saturating_sub(1);
                 }
@@ -1043,6 +1555,10 @@ impl AppEstado {
             AppEvento::Scrobbling(estado) => self.estado_scrobbling = estado,
             AppEvento::ResultadosRadio(clave) => self.manejar_resultados_radio(&clave, ctx),
             AppEvento::LogoListo(emisora_id) => self.manejar_logo_listo(emisora_id, ctx),
+            AppEvento::LetrasListas {
+                pista_id,
+                resolucion,
+            } => self.manejar_letras_listas(pista_id, *resolucion),
             AppEvento::Salir => {
                 self.debe_salir = true;
             }
@@ -1078,6 +1594,13 @@ impl AppEstado {
             Accion::Ayuda => {
                 self.ayuda_visible = !self.ayuda_visible;
             }
+            Accion::AlternarEcualizador => {
+                self.ecualizador_visible = !self.ecualizador_visible;
+                if self.ecualizador_visible {
+                    self.eq_foco_presets = false;
+                    self.refrescar_presets(ctx);
+                }
+            }
             Accion::IrA(vista) => {
                 if vista == Vista::Visual {
                     if self.modo_visual.is_some() {
@@ -1096,6 +1619,9 @@ impl AppEstado {
                 }
                 self.vista = vista;
                 self.refrescar_vista(vista, ctx);
+                if vista == Vista::Letras {
+                    self.asegurar_letras(ctx);
+                }
             }
             Accion::AlternarCola => {
                 self.cola_visible = !self.cola_visible;
@@ -1366,6 +1892,19 @@ impl AppEstado {
     }
 
     fn manejar_raton(&mut self, evento: MouseEvent, ctx: &ContextoApp<'_>) {
+        if self.vista == Vista::Letras && self.modo_visual.is_none() && !self.ecualizador_visible {
+            match evento.kind {
+                MouseEventKind::ScrollDown => {
+                    self.letras_mover(3);
+                    return;
+                }
+                MouseEventKind::ScrollUp => {
+                    self.letras_mover(-3);
+                    return;
+                }
+                _ => {}
+            }
+        }
         match evento.kind {
             MouseEventKind::ScrollDown => self.mover_seleccion(ctx, Eje::Vertical, 3),
             MouseEventKind::ScrollUp => self.mover_seleccion(ctx, Eje::Vertical, -3),
@@ -2627,6 +3166,42 @@ impl AppEstado {
                 }
             }
             AccionDialogo::ExportarRadioConfirmado => self.exportar_radio(ctx, true),
+            AccionDialogo::GuardarPresetEq => {
+                let eq = &self.estado_reproductor.eq;
+                match consultas::presets_eq::crear(ctx.conn, &valor, &eq.ganancias, eq.preamp_db) {
+                    Ok(Some(id)) => {
+                        self.enviar_eq(ctx, ComandoEq::Preset(id));
+                        self.refrescar_presets(ctx);
+                        self.notificar(
+                            NivelAviso::Info,
+                            format!("Preset «{}» guardado", valor.trim()),
+                        );
+                    }
+                    Ok(None) => {
+                        self.notificar(NivelAviso::Aviso, "Ya existe un preset con ese nombre")
+                    }
+                    Err(error) => self.notificar(
+                        NivelAviso::Error,
+                        format!("No se pudo guardar el preset: {error:#}"),
+                    ),
+                }
+            }
+            AccionDialogo::EliminarPresetEq(id) => {
+                match consultas::presets_eq::eliminar(ctx.conn, id) {
+                    Ok(true) => {
+                        self.refrescar_presets(ctx);
+                        self.notificar(NivelAviso::Info, "Preset eliminado");
+                    }
+                    Ok(false) => self.notificar(
+                        NivelAviso::Aviso,
+                        "Los presets integrados no se pueden eliminar",
+                    ),
+                    Err(error) => self.notificar(
+                        NivelAviso::Error,
+                        format!("No se pudo eliminar el preset: {error:#}"),
+                    ),
+                }
+            }
         }
     }
 
@@ -2801,7 +3376,7 @@ impl AppEstado {
             Vista::Pistas => self.pagina_nueva(ctx),
             Vista::Playlists => self.refrescar_playlists(ctx),
             Vista::Radio => self.refrescar_radio(ctx),
-            Vista::Buscar | Vista::Visual => {}
+            Vista::Buscar | Vista::Visual | Vista::Letras => {}
         }
     }
 
@@ -3381,6 +3956,7 @@ impl AppEstado {
                 if self.pantalla == Pantalla::Lista {
                     self.refrescar_vista(self.vista, ctx);
                 }
+                self.invalidar_letras(ctx);
                 self.notificar(NivelAviso::Info, resumen.mensaje());
             }
             EventoEscaneo::Cancelado { resumen } => {
@@ -3582,5 +4158,58 @@ mod pruebas {
             !app.cerrar_ayuda(),
             "el siguiente Esc ya no tiene ayuda que cerrar"
         );
+    }
+
+    #[test]
+    fn la_vista_letras_sigue_y_desplaza() {
+        let mut app = app_con_albumes(1);
+        app.vista = Vista::Letras;
+        app.estado_reproductor.posicion_ms = 2_000;
+        app.letras.letra = Letra::Sincronizada {
+            lineas: vec![
+                (0, "a".to_string()),
+                (1_000, "b".to_string()),
+                (2_000, "c".to_string()),
+            ],
+            offset_lrc_ms: 0,
+            fuente: FuenteLetra::Fichero,
+        };
+        app.tick_letras();
+        assert_eq!(app.letras.seleccion, 2, "sigue la línea actual");
+
+        app.letras_mover(-1);
+        assert_eq!(app.letras.seleccion, 1);
+        assert!(app.letras.manual_hasta.is_some());
+        app.tick_letras();
+        assert_eq!(app.letras.seleccion, 1, "en manual no se recentra");
+        assert_eq!(app.linea_actual_letras(), 2);
+
+        app.letras.manual_hasta = None;
+        app.tick_letras();
+        assert_eq!(app.letras.seleccion, 2, "vuelve a seguir la línea actual");
+        app.estado_reproductor.posicion_ms = 500;
+        app.tick_letras();
+        assert_eq!(app.letras.seleccion, 0);
+    }
+
+    #[test]
+    fn el_offset_de_letras_se_suma_a_la_sincronia() {
+        let mut app = app_con_albumes(1);
+        app.vista = Vista::Letras;
+        app.estado_reproductor.posicion_ms = 1_500;
+        app.letras.letra = Letra::Sincronizada {
+            lineas: vec![(0, "a".to_string()), (2_000, "b".to_string())],
+            offset_lrc_ms: -200,
+            fuente: FuenteLetra::Fichero,
+        };
+        app.tick_letras();
+        assert_eq!(
+            app.linea_actual_letras(),
+            0,
+            "1500 − 200 aún no llega a 2000"
+        );
+        app.letras.offset_usuario_ms = 1_000;
+        app.tick_letras();
+        assert_eq!(app.linea_actual_letras(), 1, "el offset manual adelanta");
     }
 }

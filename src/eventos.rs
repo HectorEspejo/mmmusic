@@ -1,5 +1,6 @@
 use crossterm::event::{KeyEvent, MouseEvent};
 
+use crate::letras::Resolucion;
 use crate::reproductor::estado::EstadoReproduccion;
 use crate::scrobbling::estado::EstadoScrobbling;
 use crate::tema::Paleta;
@@ -51,5 +52,9 @@ pub enum AppEvento {
     Scrobbling(EstadoScrobbling),
     ResultadosRadio(String),
     LogoListo(i64),
+    LetrasListas {
+        pista_id: i64,
+        resolucion: Box<Resolucion>,
+    },
     Salir,
 }

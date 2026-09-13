@@ -4,6 +4,7 @@ pub mod ayuda;
 pub mod buscar;
 pub mod cola;
 pub mod inicio;
+pub mod letras;
 pub mod pistas;
 pub mod playlists;
 pub mod radio;
@@ -28,6 +29,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
         Vista::Pistas => pistas::dibujar(frame, app, contenido),
         Vista::Playlists => playlists::dibujar(frame, app, contenido),
         Vista::Radio => radio::dibujar(frame, app, contenido),
+        Vista::Letras => letras::dibujar(frame, app, contenido),
         Vista::Visual => {}
     }
     frame.render_widget(
@@ -147,6 +149,9 @@ fn ayuda_contextual(app: &AppEstado) -> String {
                 " f buscar en la biblioteca · [ ] pestaña · Espacio pausar"
             }
         },
+        (Vista::Letras, _) => {
+            " j/k desplazar · Enter saltar · ( ) offset · s fuente · gg/G · ? ayuda"
+        }
         _ => " Enter reproducir · h volver · a cola · A a continuación · ? ayuda",
     }
     .to_string()

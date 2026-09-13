@@ -70,3 +70,22 @@ directorio = true
 logos = true
 # Segundos de espera antes de dar por fallida la conexión a un stream (5-120).
 espera_conexion_s = 15
+
+[ecualizador]
+# "si" activa el ecualizador al arrancar, "no" lo deja apagado y "recordar"
+# usa el último estado guardado.
+activo_al_arrancar = "recordar"
+# Limitador a −1 dBFS dentro de la cadena (alternarlo reconstruye el audio).
+limitador = true
+# ReplayGain inicial: "no", "pista" o "album"; después se recuerda.
+replaygain = "no"
+# Preamp de ReplayGain en dB (−12..12).
+replaygain_preamp_db = 0.0
+
+[letras]
+# Carpeta adicional para "<artista> - <titulo>.lrc|.txt" (normalizado).
+carpeta = "~/.local/share/mmmusic/letras"
+# Superponer letras sincronizadas al entrar en el modo visual (9 lo alterna).
+superpuestas = false
+# Líneas visibles de la superposición (1-5; la actual queda centrada).
+tamano_superposicion = 3

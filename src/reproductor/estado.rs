@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::biblioteca::modelos::{ElementoCola, EmisoraResumen, PistaResumen};
+use crate::ecualizador::EstadoEq;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Estado {
@@ -113,6 +114,7 @@ pub struct EstadoReproduccion {
     pub bitrate_kbps: Option<i64>,
     pub cache_segundos: f32,
     pub reconexiones: u32,
+    pub eq: EstadoEq,
 }
 
 impl Default for EstadoReproduccion {
@@ -135,6 +137,7 @@ impl Default for EstadoReproduccion {
             bitrate_kbps: None,
             cache_segundos: 0.0,
             reconexiones: 0,
+            eq: EstadoEq::default(),
         }
     }
 }
