@@ -13,13 +13,17 @@ use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::{Resize, StatefulImage};
+use ratatui_image::{FontSize, Resize, StatefulImage};
 use tracing::warn;
 
 use crate::app::AppEstado;
 use crate::visuales::paleta::{a_hex, colores_dominantes};
 
 pub const CAPACIDAD_CACHE: usize = 200;
+pub const FUENTE_POR_DEFECTO: FontSize = FontSize {
+    width: 10,
+    height: 20,
+};
 const LADO_MAXIMO_DECODIFICADO: u32 = 768;
 
 pub enum PeticionCaratula {
@@ -66,6 +70,10 @@ impl CacheCaratulas {
 
     pub fn tiene(&self, album_id: i64) -> bool {
         self.entradas.contains(&album_id)
+    }
+
+    pub fn fuente(&self) -> Option<FontSize> {
+        self.picker.as_ref().map(Picker::font_size)
     }
 
     pub fn insertar(&mut self, album_id: i64, imagen: DynamicImage) {
@@ -180,8 +188,9 @@ pub fn dibujar(
     }
     if app.caratulas.tiene(album_id) {
         if let Some(protocolo) = app.caratulas.entradas.get_mut(&album_id) {
-            let widget = StatefulImage::default().resize(Resize::Crop(None));
-            frame.render_stateful_widget(widget, area, protocolo);
+            let destino = destino_ajustado(protocolo, area);
+            let widget = StatefulImage::default().resize(Resize::Fit(None));
+            frame.render_stateful_widget(widget, destino, protocolo);
             return;
         }
     } else if let Some(ruta) = caratula_ruta {
@@ -196,4 +205,61 @@ pub fn dibujar(
         .style(Style::new().bg(app.paleta.fondo)),
         area,
     );
+}
+
+/// Alto en celdas que ocupará una carátula cuadrada (la caché siempre lo es)
+/// escalada al ancho indicado, redondeando al alza para no recortarla.
+pub fn alto_caratula_ajustada(ancho_celdas: u16, fuente: FontSize) -> u16 {
+    let ancho_px = u32::from(ancho_celdas.max(1)) * u32::from(fuente.width.max(1));
+    let alto = ancho_px.div_ceil(u32::from(fuente.height.max(1)));
+    alto.min(u32::from(u16::MAX)) as u16
+}
+
+/// Calcula el rectángulo donde cabe la carátula escalada y lo centra en el
+/// área disponible, para que no quede recortada ni pegada a una esquina.
+fn destino_ajustado(protocolo: &StatefulProtocol, area: Rect) -> Rect {
+    let tamano = protocolo.size_for(Resize::Fit(None), area.as_size());
+    let ancho = tamano.width.min(area.width);
+    let alto = tamano.height.min(area.height);
+    Rect {
+        x: area.x + area.width.saturating_sub(ancho) / 2,
+        y: area.y + area.height.saturating_sub(alto) / 2,
+        width: ancho,
+        height: alto,
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+    use ratatui::layout::Size;
+
+    #[test]
+    fn la_caratula_se_escala_y_centra_en_el_area() {
+        let picker = Picker::halfblocks();
+        let imagen = DynamicImage::new_rgb8(300, 300);
+        let protocolo = picker.new_resize_protocol(imagen);
+        let area = Rect::new(2, 3, 16, 2);
+        assert_eq!(
+            protocolo.size_for(Resize::Fit(None), area.as_size()),
+            Size::new(4, 2),
+            "una carátula de 300×300 debe encogerse a 4×2 celdas"
+        );
+        assert_eq!(
+            destino_ajustado(&protocolo, area),
+            Rect::new(8, 3, 4, 2),
+            "el recorte escalado debe quedar centrado en el área"
+        );
+    }
+
+    #[test]
+    fn el_area_grande_no_agranda_la_caratula() {
+        let picker = Picker::halfblocks();
+        let imagen = DynamicImage::new_rgb8(300, 300);
+        let protocolo = picker.new_resize_protocol(imagen);
+        let area = Rect::new(0, 0, 80, 24);
+        let destino = destino_ajustado(&protocolo, area);
+        assert_eq!(destino.width, 30, "no se amplía más allá de su tamaño");
+        assert!(destino.right() <= area.right() && destino.bottom() <= area.bottom());
+    }
 }
