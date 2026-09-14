@@ -3,8 +3,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::AppEstado;
+use crate::config::ModoIconos;
+use crate::marca;
 
 pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
     let ancho = area.width.saturating_sub(4).clamp(20, 76);
@@ -29,6 +32,48 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
     let tecla = Style::new().fg(app.paleta.texto);
     let descripcion = Style::new().fg(app.paleta.secundario);
     let mut lineas = Vec::new();
+
+    let ascii = app.config.interfaz.iconos == ModoIconos::Ascii;
+    let filas: &[&str; 2] = if ancho < 37 {
+        if ascii {
+            &marca::LOGO_MMM_ASCII
+        } else {
+            &marca::LOGO_MMM
+        }
+    } else if ascii {
+        &marca::LOGO_COMPACTO_ASCII
+    } else {
+        &marca::LOGO_COMPACTO
+    };
+    let ancho_interior = interior.width as usize;
+    let version = format!("v{}", marca::version());
+    let ancho_bloque = filas[0].width() + 3 + version.width();
+    let con_version = ancho_interior >= ancho_bloque;
+    let margen = if con_version {
+        (ancho_interior - ancho_bloque) / 2
+    } else {
+        ancho_interior.saturating_sub(filas[0].width()) / 2
+    };
+    let sangria = " ".repeat(margen);
+    let estilo_logo = Style::new().fg(app.paleta.acento);
+    lineas.push(Line::from(Span::styled(
+        format!("{sangria}{}", filas[0]),
+        estilo_logo,
+    )));
+    if con_version {
+        lineas.push(Line::from(vec![
+            Span::styled(format!("{sangria}{}", filas[1]), estilo_logo),
+            Span::raw("   "),
+            Span::styled(version, Style::new().fg(app.paleta.secundario)),
+        ]));
+    } else {
+        lineas.push(Line::from(Span::styled(
+            format!("{sangria}{}", filas[1]),
+            estilo_logo,
+        )));
+    }
+    lineas.push(Line::from(""));
+
     let añadir_seccion = |titulo: &str, lineas: &mut Vec<Line>| {
         lineas.push(Line::from(Span::styled(format!(" {titulo}"), seccion)));
     };
@@ -46,6 +91,7 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
         ("Tab / Shift+Tab", "ciclar foco sidebar → contenido → cola"),
         ("Ctrl+r", "reescanear la biblioteca"),
         ("t", "recargar el tema"),
+        ("S", "editar la configuración en $EDITOR"),
     ] {
         lineas.push(Line::from(vec![
             Span::styled(format!("   {k:<17} "), tecla),

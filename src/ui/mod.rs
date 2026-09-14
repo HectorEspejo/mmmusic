@@ -112,6 +112,14 @@ pub fn restaurar() {
     let _ = execute!(salida, DisableMouseCapture, LeaveAlternateScreen);
 }
 
+/// Vuelve a entrar en la pantalla alternativa tras una suspensión.
+pub fn reanudar() -> Result<()> {
+    enable_raw_mode()?;
+    let mut salida = io::stdout();
+    execute!(salida, EnterAlternateScreen, EnableMouseCapture)?;
+    Ok(())
+}
+
 fn instalar_hook_panico() {
     let anterior = panic::take_hook();
     panic::set_hook(Box::new(move |informacion| {
@@ -135,7 +143,11 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado) {
         let ancho_sidebar = if compacto_ancho {
             4
         } else {
-            app.config.interfaz.ancho_sidebar.min(area.width / 3)
+            app.config
+                .interfaz
+                .ancho_sidebar
+                .max(20)
+                .min(area.width / 3)
         };
         let mostrar_cola = app.cola_visible && !compacto_ancho && cuerpo.width > 50;
         let (area_sidebar, area_contenido, area_cola) = if mostrar_cola {

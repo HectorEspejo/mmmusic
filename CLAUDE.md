@@ -33,6 +33,7 @@ maestro en `docs/`):
 - `mmmusic-fase4-informe.md` — especificación funcional completa de la fase 4
 - `mmmusic-fase4-checklist.md` — alcance verificable de la fase 4
 - `mmmusic-fase4-implementacion.md` — informe de implementación (lo escribes tú)
+- `fase4a/mmmusic-fase4a-{informe,checklist,implementacion}.md` — subfase de identidad visual, independiente de la 4
 
 El informe de fase manda sobre tu criterio: si algo te parece incorrecto o
 incompleto, no lo cambies por tu cuenta — impleméntalo como está o párate y
@@ -103,6 +104,8 @@ coméntalo con el desarrollador.
   colores y presets van a la base de datos o a la carpeta de datos.
 - Fuentes de datos externas (letras y similares) se implementan como traits
   enchufables con resolución por orden y caché; la vista no conoce la fuente.
+- Arte de marca (logos, eslogan, onda) solo en `src/marca.rs`, con variante
+  ascii; nunca dupliques cadenas de logo en la UI.
 - Nombre del proyecto y de sus ficheros: `mmmusic` con tres emes
   (`mmmusic.db`, `mmmusic.log`, `mmmusic.db.pre-NNN`). Revisa que no se cuele
   `mmusic`.

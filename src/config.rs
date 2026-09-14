@@ -83,7 +83,7 @@ impl Default for ConfigInterfaz {
         Self {
             caratulas: true,
             iconos: ModoIconos::Nerd,
-            ancho_sidebar: 18,
+            ancho_sidebar: 20,
         }
     }
 }
@@ -305,8 +305,8 @@ impl Config {
         }
         let ancho = self.interfaz.ancho_sidebar;
         if !(14..=40).contains(&ancho) {
-            warn!(valor = ancho, "ancho_sidebar fuera de rango; se usa 18");
-            self.interfaz.ancho_sidebar = 18;
+            warn!(valor = ancho, "ancho_sidebar fuera de rango; se usa 20");
+            self.interfaz.ancho_sidebar = 20;
         }
         if !(15..=60).contains(&self.visuales.fps) {
             warn!(
@@ -555,7 +555,7 @@ ancho_sidebar = 5
         config.validar();
         assert_eq!(config.reproductor.volumen_inicial, 100);
         assert_eq!(config.reproductor.salto_corto_s, 5);
-        assert_eq!(config.interfaz.ancho_sidebar, 18);
+        assert_eq!(config.interfaz.ancho_sidebar, 20);
     }
 
     #[test]
