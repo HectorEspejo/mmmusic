@@ -1,11 +1,12 @@
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use crossterm::event::{self, Event as EventoCrossterm};
 use mmmusic::app::{AppEstado, ContextoApp, Vista};
@@ -32,6 +33,10 @@ use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if cli.version {
+        cli::imprimir_version(cli.logo);
+        return ExitCode::SUCCESS;
+    }
     let resultado: Result<u8> = match cli.comando {
         Some(Comando::Reescanear { completo }) => cli::ejecutar_reescanear(completo),
         Some(Comando::ProbarServicios) => cli::ejecutar_probar_servicios(),
@@ -229,7 +234,8 @@ fn ejecutar_tui() -> Result<()> {
         .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
     let (tx_caratulas, rx_caratulas) = mpsc::channel();
     app.activar_caratulas(picker, imagen::lanzar_worker(tx_caratulas));
-    lanzar_hilo_entrada(tx_app.clone())?;
+    let control_entrada = Arc::new(ControlEntrada::nueva());
+    lanzar_hilo_entrada(tx_app.clone(), control_entrada.clone())?;
     {
         let ctx = ContextoApp {
             conn: &conn,
@@ -259,9 +265,11 @@ fn ejecutar_tui() -> Result<()> {
         rx_app: &rx_app,
         rx_caratulas: &rx_caratulas,
         ruta_bd: &rutas.base_datos,
+        ruta_config: &rutas.config,
         dir_caratulas: &rutas.cache_caratulas,
         reproductor: &manejo_reproductor,
         scrobbling: &manejo_scrobbling,
+        control_entrada: &control_entrada,
     };
     let resultado = bucle(&mut terminal, &mut app, &recursos);
     app.cancelar_escaneo();
@@ -287,9 +295,11 @@ struct RecursosBucle<'a> {
     rx_app: &'a Receiver<AppEvento>,
     rx_caratulas: &'a Receiver<RespuestaCaratula>,
     ruta_bd: &'a Path,
+    ruta_config: &'a Path,
     dir_caratulas: &'a Path,
     reproductor: &'a ManejoReproductor,
     scrobbling: &'a scrobbling::ManejoScrobbling,
+    control_entrada: &'a ControlEntrada,
 }
 
 fn bucle(
@@ -335,6 +345,15 @@ fn bucle(
             scrobbling: recursos.scrobbling,
         };
         app.manejar(evento, &ctx);
+        if app.editar_config {
+            app.editar_config = false;
+            if let Err(error) = editar_config(&mut *terminal, app, recursos) {
+                app.notificar(
+                    NivelAviso::Error,
+                    format!("No se pudo editar la configuración: {error:#}"),
+                );
+            }
+        }
         if app.debe_salir {
             break;
         }
@@ -342,11 +361,92 @@ fn bucle(
     Ok(())
 }
 
-fn lanzar_hilo_entrada(tx: Sender<AppEvento>) -> Result<()> {
+/// Suspende la TUI, abre `config.toml` en `$EDITOR` y al volver recarga los
+/// ajustes que no dependen de hilos.
+fn editar_config(
+    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    app: &mut AppEstado,
+    recursos: &RecursosBucle<'_>,
+) -> Result<()> {
+    recursos.control_entrada.pausar();
+    ui::restaurar();
+    let edicion = lanzar_editor(recursos.ruta_config);
+    let reanudado = ui::reanudar();
+    recursos.control_entrada.reanudar();
+    reanudado.context("no se pudo reanudar la terminal")?;
+    terminal.clear().context("no se pudo limpiar la terminal")?;
+    edicion?;
+    app.recargar_config(recursos.ruta_config)
+}
+
+fn lanzar_editor(ruta: &Path) -> Result<()> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let mut partes = editor.split_whitespace();
+    let programa = partes.next().unwrap_or("vi");
+    let estado = std::process::Command::new(programa)
+        .args(partes)
+        .arg(ruta)
+        .status()
+        .with_context(|| format!("no se pudo ejecutar {editor}"))?;
+    if !estado.success() {
+        bail!("{editor} terminó con {estado}");
+    }
+    Ok(())
+}
+
+/// Pausa cooperativa del hilo de entrada para cederle el terminal a `$EDITOR`.
+struct ControlEntrada {
+    pausa: AtomicBool,
+    pausado: AtomicBool,
+}
+
+impl ControlEntrada {
+    fn nueva() -> Self {
+        Self {
+            pausa: AtomicBool::new(false),
+            pausado: AtomicBool::new(false),
+        }
+    }
+
+    /// Pide al hilo que deje de leer y espera su confirmación.
+    fn pausar(&self) {
+        self.pausa.store(true, Ordering::SeqCst);
+        let limite = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < limite {
+            if self.pausado.swap(false, Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn reanudar(&self) {
+        self.pausa.store(false, Ordering::SeqCst);
+    }
+}
+
+fn lanzar_hilo_entrada(tx: Sender<AppEvento>, control: Arc<ControlEntrada>) -> Result<()> {
     thread::Builder::new()
         .name("entrada".to_string())
         .spawn(move || {
             loop {
+                if control.pausa.load(Ordering::SeqCst) {
+                    control.pausado.store(true, Ordering::SeqCst);
+                    while control.pausa.load(Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    continue;
+                }
+                match event::poll(Duration::from_millis(100)) {
+                    Ok(false) => continue,
+                    Ok(true) => {}
+                    Err(error) => {
+                        tracing::error!("error esperando eventos de terminal: {error}");
+                        break;
+                    }
+                }
                 match event::read() {
                     Ok(EventoCrossterm::Key(tecla)) => {
                         if tx.send(AppEvento::Tecla(tecla)).is_err() {

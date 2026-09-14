@@ -489,6 +489,8 @@ pub struct AppEstado {
     pub cola_visible: bool,
     pub debe_salir: bool,
     pub salida_inmediata: bool,
+    /// El bucle principal debe abrir `config.toml` en `$EDITOR`.
+    pub editar_config: bool,
     pub ruta_tema: PathBuf,
     pub caratulas: CacheCaratulas,
     pub zonas: ZonasRaton,
@@ -593,6 +595,7 @@ impl AppEstado {
             cola_visible: false,
             debe_salir: false,
             salida_inmediata: false,
+            editar_config: false,
             ruta_tema,
             caratulas: CacheCaratulas::nuevo(),
             zonas: ZonasRaton::default(),
@@ -1649,6 +1652,9 @@ impl AppEstado {
                 }
             }
             Accion::RecargarTema => self.recargar_tema(),
+            Accion::EditarConfig => {
+                self.editar_config = true;
+            }
             Accion::TeclaG => {
                 if self.pendiente_g {
                     self.pendiente_g = false;
@@ -4019,6 +4025,38 @@ impl AppEstado {
         }
     }
 
+    /// Relee `config.toml` en caliente: interfaz, iconos y tema se aplican al
+    /// momento; radio, visuales y scrobbling necesitan reiniciar sus hilos.
+    pub fn recargar_config(&mut self, ruta: &Path) -> anyhow::Result<()> {
+        let carga = Config::cargar(ruta)?;
+        let anterior = std::mem::replace(&mut self.config, carga.config);
+        if self.config.interfaz.iconos != anterior.interfaz.iconos {
+            self.iconos = Iconos::desde(self.config.interfaz.iconos);
+            self.visuales = visuales::registro(self.config.interfaz.iconos == ModoIconos::Ascii);
+            self.indice_visual = self
+                .indice_visual
+                .min(self.visuales.len().saturating_sub(1));
+            self.reinicio_visual = true;
+        }
+        let (paleta, aviso_tema) = tema::cargar(&self.config.tema, &self.ruta_tema);
+        self.paleta = paleta;
+        if let Some(aviso) = aviso_tema {
+            self.notificar(NivelAviso::Aviso, aviso);
+        }
+        if self.config.radio != anterior.radio
+            || self.config.visuales != anterior.visuales
+            || self.config.scrobbling != anterior.scrobbling
+        {
+            self.notificar(
+                NivelAviso::Aviso,
+                "Configuración recargada; reinicia mmmusic para radio, visuales y scrobbling",
+            );
+        } else {
+            self.notificar(NivelAviso::Info, "Configuración recargada");
+        }
+        Ok(())
+    }
+
     pub fn cancelar_escaneo(&mut self) {
         if let Some(manejo) = self.manejo_escaneo.take() {
             manejo.cancelar();
@@ -4028,6 +4066,11 @@ impl AppEstado {
     pub fn esta_detenido(&self) -> bool {
         self.estado_reproductor.estado == Estado::Detenido
             && self.estado_reproductor.pista_actual().is_none()
+    }
+
+    /// Desplazamiento de la onda de reposo: un carácter por tick base (250 ms).
+    pub fn desplazamiento_onda(&self) -> usize {
+        (self.arranque.elapsed().as_millis() / TICK_BASE.as_millis()) as usize
     }
 }
 
@@ -4211,5 +4254,28 @@ mod pruebas {
         app.letras.offset_usuario_ms = 1_000;
         app.tick_letras();
         assert_eq!(app.linea_actual_letras(), 1, "el offset manual adelanta");
+    }
+
+    #[test]
+    fn la_configuracion_se_recarga_en_caliente() {
+        let temporal = tempfile::tempdir().expect("directorio temporal");
+        let ruta = temporal.path().join("config.toml");
+        std::fs::write(
+            &ruta,
+            "[interfaz]\nancho_sidebar = 25\niconos = \"ascii\"\n",
+        )
+        .expect("escribir config");
+        let mut app = app_con_albumes(1);
+        app.recargar_config(&ruta).expect("recargar");
+        assert_eq!(app.config.interfaz.ancho_sidebar, 25);
+        assert_eq!(app.config.interfaz.iconos, ModoIconos::Ascii);
+        assert_eq!(app.iconos.reproducir, ">", "los iconos se actualizan");
+
+        std::fs::write(&ruta, "no es toml [").expect("escribir config inválida");
+        assert!(app.recargar_config(&ruta).is_err());
+        assert_eq!(
+            app.config.interfaz.ancho_sidebar, 25,
+            "una config inválida no cambia nada"
+        );
     }
 }

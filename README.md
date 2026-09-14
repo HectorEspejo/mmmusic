@@ -1,5 +1,17 @@
 # mmmusic
 
+```
+███╗   ███╗███╗   ███╗███╗   ███╗██╗   ██╗███████╗██╗ ██████╗
+████╗ ████║████╗ ████║████╗ ████║██║   ██║██╔════╝██║██╔════╝
+██╔████╔██║██╔████╔██║██╔████╔██║██║   ██║███████╗██║██║     
+██║╚██╔╝██║██║╚██╔╝██║██║╚██╔╝██║██║   ██║╚════██║██║██║     
+██║ ╚═╝ ██║██║ ╚═╝ ██║██║ ╚═╝ ██║╚██████╔╝███████║██║╚██████╗
+╚═╝     ╚═╝╚═╝     ╚═╝╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚═╝ ╚═════╝
+```
+
+<sub>Logo generado con la fuente `ansi_shadow` de figlet; para regenerarlo:
+`figlet -f ansi_shadow mmmusic`.</sub>
+
 Reproductor de música para terminal (TUI) pensado para Omarchy (Arch Linux +
 Hyprland), con disposición tipo Spotify: sidebar de navegación, contenido
 central y barra inferior de "sonando ahora". Atajos estilo vim, carátulas en la
@@ -240,6 +252,7 @@ Globales:
 | `Tab` / `Shift+Tab` | Ciclar foco |
 | `Ctrl+r` | Reescanear |
 | `t` | Recargar tema |
+| `S` | Editar `config.toml` en `$EDITOR` y recargar |
 
 En el modo visual: `v`/`V` ciclan las visuales, `1`–`6` saltan a una concreta,
 `[`/`]` ajustan la sensibilidad (×0.8 / ×1.25), `b` alterna la paleta
