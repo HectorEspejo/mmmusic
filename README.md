@@ -35,7 +35,7 @@ terminal y MPRIS para Waybar/`playerctl` y las teclas multimedia de Hyprland.
 - Recopilatorios sin `albumartist` agrupados bajo "Varios artistas" por carpeta
   y álbum.
 - Visuales reactivas en terminal (espectro, barras y ondas, ambiente,
-  partículas, caleidoscopio y túnel) que capturan el audio propio desde
+  partículas, caleidoscopio, túnel y ciudad) que capturan el audio propio desde
   PipeWire, con mini espectro y paleta del tema o de la carátula.
 - Tema del sistema de Omarchy con recarga en caliente al cambiar de tema.
 - Carátulas embebidas o `cover.*` en caché 300×300, renderizadas con

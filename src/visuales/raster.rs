@@ -310,7 +310,14 @@ impl Raster {
                 }
                 let x = columna * PUNTOS_X + bit % PUNTOS_X;
                 let y = fila * PUNTOS_Y + bit / PUNTOS_X;
-                destino.push((x as f64 * factor_x, alto_celdas - y as f64 * factor_y));
+                // El redondeo en coma flotante deja la última fila y la última
+                // columna unas ulps fuera de los límites del canvas, y
+                // `Painter::get_point` descarta lo que se sale: se acotan para
+                // que el punto vuelva a caer en su celda.
+                destino.push((
+                    (x as f64 * factor_x).clamp(0.0, self.ancho_celdas as f64),
+                    (alto_celdas - y as f64 * factor_y).clamp(0.0, alto_celdas),
+                ));
             }
         }
 
@@ -504,6 +511,82 @@ mod pruebas {
         assert_eq!(pintadas, 3, "cada punto cae en una celda distinta");
         assert_eq!(buffer[(0, 0)].fg, AZUL);
         assert_eq!(buffer[(ancho - 1, alto - 1)].fg, ROJO);
+    }
+
+    #[test]
+    fn los_puntos_del_borde_caen_en_su_celda() {
+        use std::cell::RefCell;
+
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        use ratatui::widgets::canvas::Canvas;
+
+        // Tamaños en los que el redondeo dejaba fuera la última fila o la
+        // última columna de puntos.
+        for (ancho, alto) in [(20u16, 22u16), (15, 24), (44, 22), (80, 24)] {
+            let raster = RefCell::new(Raster::nuevo(ancho as usize, alto as usize, false));
+            let (ultimo_x, ultimo_y) = (i32::from(ancho) * 2 - 1, i32::from(alto) * 4 - 1);
+            for (x, y) in [(0, 0), (ultimo_x, 0), (0, ultimo_y), (ultimo_x, ultimo_y)] {
+                raster.borrow_mut().punto(x, y, AZUL);
+            }
+            let area = Rect::new(0, 0, ancho, alto);
+            let mut buffer = Buffer::empty(area);
+            let canvas = Canvas::default()
+                .x_bounds([0.0, f64::from(ancho)])
+                .y_bounds([0.0, f64::from(alto)])
+                .background_color(Color::Reset)
+                .paint(|ctx| raster.borrow_mut().volcar(ctx));
+            canvas.render(area, &mut buffer);
+
+            for (columna, fila) in [(0, 0), (ancho - 1, 0), (0, alto - 1), (ancho - 1, alto - 1)] {
+                assert_ne!(
+                    buffer[(columna, fila)].symbol(),
+                    " ",
+                    "el punto de la esquina ({columna}, {fila}) no llegó a pintarse en {ancho}×{alto}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn el_volcado_reutiliza_el_pool_de_grupos() {
+        use ratatui::symbols::Marker;
+        use ratatui::widgets::canvas::Context;
+
+        let mut raster = Raster::nuevo(40, 12, false);
+        let mut ctx = Context::new(40, 12, [0.0, 40.0], [0.0, 12.0], Marker::Braille);
+        let colores = [AZUL, ROJO, Color::Rgb(1, 1, 1), Color::Rgb(2, 2, 2)];
+        let mut medidas = Vec::new();
+        for frame in 0..6 {
+            raster.limpiar();
+            for (indice, color) in colores.iter().enumerate() {
+                for x in 0..80 {
+                    raster.punto(x, indice as i32 * 4 + frame % 4, *color);
+                }
+            }
+            raster.volcar(&mut ctx);
+            medidas.push((
+                raster.grupos.len(),
+                raster
+                    .grupos
+                    .iter()
+                    .map(|grupo| grupo.coords.capacity())
+                    .sum::<usize>(),
+            ));
+        }
+
+        // El pool de grupos y sus buffers son los mismos en todos los frames:
+        // ni se acumulan grupos nuevos ni crecen los buffers ya reservados.
+        let (grupos, capacidad) = *medidas.last().expect("hubo frames");
+        assert_eq!(grupos, colores.len(), "un grupo por color del frame");
+        for (frame, medida) in medidas.iter().enumerate().skip(1) {
+            assert_eq!(
+                *medida,
+                (grupos, capacidad),
+                "el volcado reservó memoria nueva en el frame {frame}"
+            );
+        }
     }
 
     #[test]
