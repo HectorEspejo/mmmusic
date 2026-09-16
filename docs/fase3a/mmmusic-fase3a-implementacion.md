@@ -27,10 +27,31 @@ saliendo), con la configuración `ciudad_vuelta_s`, `ciudad_filas` y
 `ciudad_punteado`.
 
 **Estado de las comprobaciones** (`cargo test`, `cargo clippy --all-targets -- -D
-warnings`, `cargo fmt --check`): los tres limpios. 235 pruebas en verde (145 de
-librería y 90 de integración), de las cuales 9 son de `tests/ciudad.rs` y 5
-internas de `ciudad.rs`; la medición del presupuesto de frame queda fuera de la
-ejecución normal (está marcada `#[ignore]`).
+warnings`, `cargo fmt --check`): los tres limpios. 248 pruebas en verde (150 de
+librería y 98 de integración, contando ya las de la fase 4a, integrada antes en
+`main`); de la fase 3a: 9 en `tests/ciudad.rs`, 5 internas de `ciudad.rs`, 5 de
+`proyeccion.rs` y 9 de `raster.rs`. La medición del presupuesto de frame queda
+fuera de la ejecución normal (está marcada `#[ignore]`).
+
+**Verificación cruzada posterior.** Una ronda de revisión independiente (cuatro
+lentes en paralelo —checklist, algoritmos, reglas del proyecto y pruebas— con un
+refutador por hallazgo) confirmó **un fallo real** en el volcado braille y dos
+defectos menores, todos corregidos:
+
+- El redondeo en coma flotante dejaba la última fila y la última columna de
+  puntos unas ulps fuera de los límites del `Canvas`, y `Painter::get_point`
+  descarta lo que se sale: en ciertos tamaños (alto de 22, 51 y 54 celdas, y
+  bastantes anchos) se perdían esos puntos, algo alcanzable porque las estrellas
+  se reparten por todo el raster. Corregido acotando las coordenadas al canvas.
+- La lista de características del `README` seguía enumerando seis visuales.
+- Una prueba de `tests/ciudad.rs` prometía comprobar la reserva del raster y solo
+  verificaba que `limpiar()` lo deja a cero; se renombró por lo que prueba y la
+  comprobación de reutilización se movió al módulo interno de `raster.rs`, que sí
+  ve los buffers privados.
+
+Los hallazgos descartados (historia centrada en el origen, altura mínima de los
+edificios, aviso de fotosensibilidad del `README`) eran interpretaciones ya
+anotadas en este informe o prosa del `README` sin comportamiento asociado.
 
 **Presupuesto de frame (riesgo R-27 medido):** en `--release`, el frame completo
 (dibujo + volcado + `Canvas`) tarda **1,09 ms de mediana y 1,14 ms en el
@@ -208,6 +229,21 @@ docs/fase3a/mmmusic-fase3a-checklist.md  casillas y contadores.
     (cierre de R-27). A 200 × 50 la altura de la terminal solo pide 12 filas
     (`clamp(alto/4, 8, 16)`), así que el máximo real de prismas exige medir
     aparte a 200 × 70.
+12. **Acotado de las coordenadas del volcado braille.** El mapeo punto → canvas
+    es `x · W/(2W−1)` y `H − y · H/(4H−1)`, que en los extremos queda unas ulps
+    fuera de `[0, W] × [0, H]` por el redondeo en coma flotante; como
+    `Painter::get_point` devuelve `None` para lo que se sale de los límites, esos
+    puntos se perdían en silencio. Se acotan con `clamp` a los límites del
+    canvas: el redondeo posterior los devuelve a su celda, así que no se
+    desplazan. Cubierto por `los_puntos_del_borde_caen_en_su_celda`, que pinta
+    las cuatro esquinas de la rejilla en los tamaños afectados y que falla sin el
+    arreglo (comprobado).
+13. **Prueba de reutilización de buffers.** `el_volcado_reutiliza_el_pool_de_grupos`
+    (interna de `raster.rs`, que sí ve los campos privados) comprueba que el pool
+    de grupos y la capacidad de sus buffers no cambian de un frame a otro, y falla
+    si se rompe el reciclado (comprobado mutando el código). Es la red que faltaba
+    para el «sin asignaciones por frame» del checklist, cuyo presupuesto de
+    rendimiento depende de eso.
 
 ---
 
@@ -246,6 +282,18 @@ docs/fase3a/mmmusic-fase3a-checklist.md  casillas y contadores.
 
 ## Pendientes y bloqueos
 
+- **La ayuda (`?`) se recorta y la fila `0 Ciudad` no llega a verse (propuesta,
+  no implementada).** El contenido de la ayuda son 70 líneas, pero el bloque se
+  acota a `alto − 2` (como mucho 60, o sea 58 útiles) y `Paragraph` no se
+  desplaza: en un terminal de 24 filas solo se ven las primeras secciones, y la
+  sección «Visual» —que es la última— queda fuera. Comprobado con `TestBackend`:
+  a 80 × 24 no aparece ni la sección, y a 100 × 50 y 120 × 70 la sección sí
+  aparece pero la fila no. Es previo a esta fase (la 4a añadió el logo, el
+  ecualizador y las letras), pero afecta a la práctica del checklist: la fila
+  está escrita y visible en el fichero, aunque no en pantalla. **Propuesta** (a
+  decidir por el desarrollador, fuera del alcance de la fase): desplazar la ayuda
+  con `j`/`k` y la rueda, o repartirla en dos páginas, o quitar el logo del
+  encabezado cuando el contenido no quepa. No se ha tocado.
 - **Validación manual en Omarchy (desarrollador).** No se puede hacer desde el
   entorno de desarrollo: estética de la ciudad y del parpadeo de estrellas con
   audio real, comportamiento a 40×12 y a 200×50, que la degradación a 15 fps no

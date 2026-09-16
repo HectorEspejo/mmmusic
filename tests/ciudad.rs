@@ -321,16 +321,20 @@ fn la_ciudad_dibuja_algo_con_audio_y_se_apaga_sin_el() {
 }
 
 #[test]
-fn la_reserva_del_raster_no_crece_con_los_frames() {
+fn limpiar_deja_el_raster_a_cero() {
     let mut raster = Raster::nuevo(80, 24, false);
     let color = Color::Rgb(4, 5, 6);
-    let antes = puntos(&raster);
     for frame in 0..10 {
         raster.limpiar();
+        assert_eq!(
+            puntos(&raster),
+            0,
+            "tras limpiar no puede quedar ningún punto del frame {frame}"
+        );
         for x in 0..160 {
             raster.punto(x, frame, color);
         }
-        assert!(puntos(&raster) > antes);
+        assert_eq!(puntos(&raster), 160);
     }
     raster.limpiar();
     assert_eq!(puntos(&raster), 0);
