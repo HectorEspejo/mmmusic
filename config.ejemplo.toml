@@ -50,7 +50,7 @@ activo = true
 # Fotogramas por segundo del modo visual y del mini espectro (15-60).
 fps = 30
 # Visual inicial: espectro, barras y ondas, ambiente, partículas,
-# caleidoscopio o túnel.
+# caleidoscopio, túnel o ciudad.
 predeterminada = "espectro"
 # Paleta inicial: "tema" (Omarchy) o "caratula" (colores dominantes de la carátula).
 paleta = "tema"
@@ -61,6 +61,13 @@ mini_espectro = true
 autoinicio_min = 0
 # Nombre del nodo de PipeWire a capturar (application.name/node.name).
 nodo = "mmmusic"
+# Ciudad (visual 7): segundos que tarda la cámara en dar una vuelta (5-120).
+ciudad_vuelta_s = 20
+# Ciudad: tope de filas de historia; la altura de la terminal puede pedir
+# menos (8-16).
+ciudad_filas = 12
+# Ciudad: aristas punteadas; false las dibuja continuas.
+ciudad_punteado = true
 
 [radio]
 # Activa el directorio Radio Browser (pestaña Buscar y hilo de red propio).

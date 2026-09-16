@@ -32,6 +32,9 @@ maestro en `docs/`):
 - `mmmusic-fase5-implementacion.md` — informe de implementación de la fase 5 (cerrada)
 - `mmmusic-fase4-informe.md` — especificación funcional completa de la fase 4
 - `mmmusic-fase4-checklist.md` — alcance verificable de la fase 4
+- `mmmusic-fase4-implementacion.md` — informe de implementación de la fase 4 (cerrada)
+- `fase4a/mmmusic-fase4a-{informe,checklist,implementacion}.md` — subfase de identidad visual, independiente de la 4
+- `fase3a/mmmusic-fase3a-{informe,checklist,implementacion}.md` — subfase de la 3: séptima visual "Ciudad"
 - `mmmusic-fase4-implementacion.md` — informe de implementación (lo escribes tú)
 - `fase4a/mmmusic-fase4a-{informe,checklist,implementacion}.md` — subfase de identidad visual, independiente de la 4
 
@@ -98,12 +101,21 @@ coméntalo con el desarrollador.
   por `red/cliente.rs`, que aplica la allowlist. No implementes protocolos de
   red a mano (DNS, HTTP…) cuando exista un crate pequeño y auditado.
 - Filtros de audio de mpv: cadena etiquetada (`@pre`, `@eqN`, `@lim`) instalada
-  una vez y ajustada con `af-command`; reconstruir solo cuando no hay comando
-  en caliente. `af = ""` cuando todo está plano.
+  una vez y ajustada con `af-command <etiqueta sin @> <param> <valor>
+  <filtro interior>` (p. ej. `af-command eq3 g 4.0 equalizer`); sin el cuarto
+  argumento mpv falla. Reconstruir solo cuando no hay comando en caliente.
+  `af = ""` cuando todo está plano.
+- Lecturas de disco a demanda desde la UI (letras, etiquetas) van a un worker
+  propio que responde por `AppEvento`; la UI cachea por `pista_id` e invalida
+  al terminar un escaneo.
+- Este fichero existe SOLO en la raíz del repositorio. Nunca lo copies dentro
+  de `docs/`; si encuentras una copia ahí, avisa al desarrollador.
 - mmmusic nunca escribe en la biblioteca del usuario (audio, `.lrc`); offsets,
   colores y presets van a la base de datos o a la carpeta de datos.
 - Fuentes de datos externas (letras y similares) se implementan como traits
   enchufables con resolución por orden y caché; la vista no conoce la fuente.
+- Visuales con ocultación o capas: usa `visuales/raster.rs` (borrar polígonos,
+  líneas punteadas, volcado al `Canvas`); no modifiques el trait `Visual`.
 - Arte de marca (logos, eslogan, onda) solo en `src/marca.rs`, con variante
   ascii; nunca dupliques cadenas de logo en la UI.
 - Nombre del proyecto y de sus ficheros: `mmmusic` con tres emes

@@ -60,7 +60,7 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect) {
     if ayuda.height > 0 {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                " v/V visual · 1-6 elegir · [ ] sensibilidad · b paleta · 9 letras · 7/Esc salir · ? ayuda",
+                " v/V visual · 1-6 elegir · 0 ciudad · [ ] sensibilidad · b paleta · 9 letras · 7/Esc salir · ? ayuda",
                 Style::new().fg(app.paleta.secundario),
             ))),
             ayuda,

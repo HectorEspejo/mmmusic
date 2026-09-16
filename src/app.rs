@@ -544,7 +544,13 @@ pub struct AppEstado {
 impl AppEstado {
     pub fn nuevo(config: Config, paleta: Paleta, total_pistas: i64, ruta_tema: PathBuf) -> Self {
         let iconos = Iconos::desde(config.interfaz.iconos);
-        let visuales = visuales::registro(config.interfaz.iconos == ModoIconos::Ascii);
+        let ajustes_ciudad = visuales::ciudad::AjustesCiudad {
+            vuelta_s: config.visuales.ciudad_vuelta_s as f32,
+            filas: config.visuales.ciudad_filas as usize,
+            punteado: config.visuales.ciudad_punteado,
+        };
+        let visuales =
+            visuales::registro(config.interfaz.iconos == ModoIconos::Ascii, &ajustes_ciudad);
         let paleta_visual = PaletaVisual::desde_tema(&paleta);
         let fuente_paleta = config.visuales.paleta;
         let letras_superpuestas = config.letras.superpuestas;
@@ -1185,6 +1191,11 @@ impl AppEstado {
             }
             KeyCode::Char(caracter @ '1'..='6') => {
                 self.saltar_visual(caracter as usize - '1' as usize, ctx);
+                true
+            }
+            KeyCode::Char('0') => {
+                // Séptima visual: "7" sigue siendo la salida del modo visual.
+                self.saltar_visual(6, ctx);
                 true
             }
             KeyCode::Char('9') => {

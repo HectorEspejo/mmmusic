@@ -216,6 +216,7 @@ pub fn dibujar(frame: &mut Frame, app: &AppEstado, area: Rect) {
             "1-6",
             "Espectro, Barras y ondas, Ambiente, Partículas, Caleidoscopio, Túnel",
         ),
+        ("0", "Ciudad (espectro 3D en órbita)"),
         ("[ / ]", "sensibilidad ×0.8 / ×1.25"),
         ("b", "paleta: tema ↔ carátula"),
         ("Esc", "salir del modo visual"),
