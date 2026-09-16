@@ -167,6 +167,9 @@ pub struct ConfigVisuales {
     pub mini_espectro: bool,
     pub autoinicio_min: u64,
     pub nodo: String,
+    pub ciudad_vuelta_s: u32,
+    pub ciudad_filas: u16,
+    pub ciudad_punteado: bool,
 }
 
 impl Default for ConfigVisuales {
@@ -179,6 +182,9 @@ impl Default for ConfigVisuales {
             mini_espectro: true,
             autoinicio_min: 0,
             nodo: "mmmusic".to_string(),
+            ciudad_vuelta_s: 20,
+            ciudad_filas: 12,
+            ciudad_punteado: true,
         }
     }
 }
@@ -329,6 +335,20 @@ impl Config {
                 "visuales.autoinicio_min fuera de rango; se acota a 1440"
             );
             self.visuales.autoinicio_min = 1_440;
+        }
+        if !(5..=120).contains(&self.visuales.ciudad_vuelta_s) {
+            warn!(
+                valor = self.visuales.ciudad_vuelta_s,
+                "visuales.ciudad_vuelta_s fuera de rango; se usa 20"
+            );
+            self.visuales.ciudad_vuelta_s = 20;
+        }
+        if !(8..=16).contains(&self.visuales.ciudad_filas) {
+            warn!(
+                valor = self.visuales.ciudad_filas,
+                "visuales.ciudad_filas fuera de rango; se usa 12"
+            );
+            self.visuales.ciudad_filas = 12;
         }
         if self.biblioteca.carpetas.is_empty() {
             warn!("biblioteca.carpetas vacía; se usa ~/Music");
@@ -569,15 +589,33 @@ paleta = "caratula"
 mini_espectro = false
 autoinicio_min = 99999
 nodo = ""
+ciudad_vuelta_s = 1
+ciudad_filas = 99
+ciudad_punteado = false
 "#;
         let mut config: Config = toml::from_str(texto).expect("parseo");
         assert!(!config.visuales.activo);
         assert_eq!(config.visuales.paleta, FuentePaleta::Caratula);
+        assert!(!config.visuales.ciudad_punteado);
         config.validar();
         assert_eq!(config.visuales.fps, 30);
         assert_eq!(config.visuales.nodo, "mmmusic");
         assert_eq!(config.visuales.predeterminada, "espectro");
         assert_eq!(config.visuales.autoinicio_min, 1_440);
+        assert_eq!(config.visuales.ciudad_vuelta_s, 20);
+        assert_eq!(config.visuales.ciudad_filas, 12);
+        assert!(!config.visuales.ciudad_punteado);
+
+        // La visual "ciudad" es un valor válido sin tocar la lista de nombres.
+        let mut config: Config = toml::from_str(
+            r#"
+[visuales]
+predeterminada = "ciudad"
+"#,
+        )
+        .expect("parseo");
+        config.validar();
+        assert_eq!(config.visuales.predeterminada, "ciudad");
     }
 
     #[test]

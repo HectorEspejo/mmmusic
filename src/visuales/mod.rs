@@ -1,10 +1,13 @@
 pub mod ambiente;
 pub mod barras_ondas;
 pub mod caleidoscopio;
+pub mod ciudad;
 pub mod espectro;
 pub mod mini_espectro;
 pub mod paleta;
 pub mod particulas;
+pub mod proyeccion;
+pub mod raster;
 pub mod tunel;
 
 use std::cell::RefCell;
@@ -31,14 +34,15 @@ pub trait Visual {
     );
 }
 
-/// Nombres en castellano y orden canónico de las seis visuales.
-pub const NOMBRES: [&str; 6] = [
+/// Nombres en castellano y orden canónico de las siete visuales.
+pub const NOMBRES: [&str; 7] = [
     "Espectro",
     "Barras y ondas",
     "Ambiente",
     "Partículas",
     "Caleidoscopio",
     "Túnel",
+    "Ciudad",
 ];
 
 pub fn indice_por_nombre(nombre: &str) -> Option<usize> {
@@ -49,7 +53,7 @@ pub fn indice_por_nombre(nombre: &str) -> Option<usize> {
 
 pub type VisualCompartida = Rc<RefCell<Box<dyn Visual>>>;
 
-pub fn registro(ascii: bool) -> Vec<VisualCompartida> {
+pub fn registro(ascii: bool, ajustes_ciudad: &ciudad::AjustesCiudad) -> Vec<VisualCompartida> {
     let mut lista: Vec<VisualCompartida> = Vec::with_capacity(NOMBRES.len());
     lista.push(Rc::new(RefCell::new(Box::new(espectro::Espectro::nuevo(
         ascii,
@@ -65,6 +69,10 @@ pub fn registro(ascii: bool) -> Vec<VisualCompartida> {
         caleidoscopio::Caleidoscopio::nuevo(),
     ))));
     lista.push(Rc::new(RefCell::new(Box::new(tunel::Tunel::nuevo()))));
+    lista.push(Rc::new(RefCell::new(Box::new(ciudad::Ciudad::nuevo(
+        ascii,
+        *ajustes_ciudad,
+    )))));
     lista
 }
 

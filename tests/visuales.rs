@@ -3,7 +3,7 @@ use mmmusic::audio::Analisis;
 use mmmusic::config::{Config, ConfigTema};
 use mmmusic::tema;
 use mmmusic::ui;
-use mmmusic::visuales::{self, mini_espectro, paleta::Paleta};
+use mmmusic::visuales::{self, ciudad::AjustesCiudad, mini_espectro, paleta::Paleta};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -60,8 +60,8 @@ fn cada_visual_dibuja_en_tres_tamanos_y_tres_estados() {
         Analisis::vacio(64, 160),
     ];
     for ascii in [false, true] {
-        let visuales = visuales::registro(ascii);
-        assert_eq!(visuales.len(), 6);
+        let visuales = visuales::registro(ascii, &AjustesCiudad::default());
+        assert_eq!(visuales.len(), 7);
         for (indice, visual) in visuales.iter().enumerate() {
             for (ancho, alto) in TAMANOS {
                 for estado in &analisis {
@@ -118,7 +118,7 @@ fn la_vista_visual_se_dibuja_y_vuelve_a_la_vista_anterior() {
         .map(|celda| celda.symbol())
         .collect();
     assert!(
-        texto.contains("Visual 1/6"),
+        texto.contains("Visual 1/7"),
         "la cabecera debe mostrar la visual activa"
     );
 

@@ -189,8 +189,16 @@ visual; `[letras]` en `config.toml` controla `carpeta`, `superpuestas` y
 ## Visuales
 
 La sección `7 Visual` muestra a pantalla completa visualizaciones que reaccionan
-al audio: Espectro, Barras y ondas, Ambiente, Partículas, Caleidoscopio y
-Túnel. La barra inferior incorpora además un mini espectro de 12 barras.
+al audio: Espectro, Barras y ondas, Ambiente, Partículas, Caleidoscopio, Túnel y
+Ciudad. La barra inferior incorpora además un mini espectro de 12 barras.
+
+Ciudad dibuja el espectro como una ciudad de rascacielos en perspectiva: cada
+banda es una columna de edificios y cada fila es un fotograma reciente, así que
+la ciudad muestra el último segundo de audio. La cámara la orbita como un
+helicóptero y las aristas van punteadas con líneas ocultas, sobre un cielo de
+estrellas. Se ajusta en `[visuales]` con `ciudad_vuelta_s` (segundos por vuelta,
+5-120), `ciudad_filas` (tope de filas de historia, 8-16) y `ciudad_punteado`
+(`false` dibuja las aristas continuas).
 
 El audio se captura del nodo de PipeWire propio de mmmusic
 (`audio-client-name=mmmusic`) sin decodificar dos veces; si el enlace directo
@@ -200,7 +208,8 @@ aplicaciones). Sin PipeWire o sin nodo, las visuales pasan a modo ambiental.
 
 Ajustes en `[visuales]` de `config.toml`: `activo`, `fps` (15-60),
 `predeterminada`, `paleta` (`tema` o `caratula`), `mini_espectro`,
-`autoinicio_min` (protector de pantalla) y `nodo`. Con `activo = false`
+`autoinicio_min` (protector de pantalla), `nodo` y los tres de Ciudad
+(`ciudad_vuelta_s`, `ciudad_filas`, `ciudad_punteado`). Con `activo = false`
 desaparecen el hilo de captura, el mini espectro y la sección 7.
 
 La paleta `caratula` usa los cinco colores dominantes de la carátula del álbum
@@ -241,10 +250,10 @@ Globales:
 | `Ctrl+r` | Reescanear |
 | `t` | Recargar tema |
 
-En el modo visual: `v`/`V` ciclan las visuales, `1`–`6` saltan a una concreta,
-`[`/`]` ajustan la sensibilidad (×0.8 / ×1.25), `b` alterna la paleta
-tema ↔ carátula, `9` alterna las letras superpuestas y `7`/`Esc` salen; los
-atajos de reproducción y `L` siguen activos.
+En el modo visual: `v`/`V` ciclan las visuales, `1`–`6` saltan a una concreta y
+`0` a Ciudad (la séptima), `[`/`]` ajustan la sensibilidad (×0.8 / ×1.25), `b`
+alterna la paleta tema ↔ carátula, `9` alterna las letras superpuestas y
+`7`/`Esc` salen; los atajos de reproducción y `L` siguen activos.
 
 Ecualizador (`E`): `h`/`l` banda, `j`/`k` ±1 dB, `J`/`K` ±0,5 dB, `0` a cero,
 `R` a Plano, `Tab` presets, `Enter` aplicar, `N` guardar, `D` borrar, `e` EQ,
