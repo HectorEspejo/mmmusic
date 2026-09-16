@@ -17,11 +17,17 @@ use crate::scrobbling::{SERVICIO_LASTFM, SERVICIO_LISTENBRAINZ};
 #[derive(Debug, Parser)]
 #[command(
     name = "mmmusic",
-    version,
     about = "Reproductor de música para terminal",
-    long_about = None
+    long_about = None,
+    disable_version_flag = true
 )]
 pub struct Cli {
+    /// Muestra la versión y sale
+    #[arg(short = 'V', long = "version")]
+    pub version: bool,
+    /// Añade el logo grande a la salida de la versión
+    #[arg(long = "logo", requires = "version")]
+    pub logo: bool,
     #[command(subcommand)]
     pub comando: Option<Comando>,
 }
@@ -38,6 +44,21 @@ pub enum Comando {
     ProbarServicios,
     /// Autorizar Last.fm y guardar la sesión
     AutorizarLastfm,
+}
+
+pub fn imprimir_version(con_logo: bool) {
+    if con_logo {
+        for fila in crate::marca::LOGO_GRANDE {
+            println!("{fila}");
+        }
+        println!(
+            "♪ mmmusic {} · {}",
+            crate::marca::version(),
+            crate::marca::ESLOGAN
+        );
+    } else {
+        println!("♪ mmmusic {}", crate::marca::version());
+    }
 }
 
 pub fn ejecutar_reescanear(completo: bool) -> Result<u8> {

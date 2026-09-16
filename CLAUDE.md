@@ -35,6 +35,8 @@ maestro en `docs/`):
 - `mmmusic-fase4-implementacion.md` — informe de implementación de la fase 4 (cerrada)
 - `fase4a/mmmusic-fase4a-{informe,checklist,implementacion}.md` — subfase de identidad visual, independiente de la 4
 - `fase3a/mmmusic-fase3a-{informe,checklist,implementacion}.md` — subfase de la 3: séptima visual "Ciudad"
+- `mmmusic-fase4-implementacion.md` — informe de implementación (lo escribes tú)
+- `fase4a/mmmusic-fase4a-{informe,checklist,implementacion}.md` — subfase de identidad visual, independiente de la 4
 
 El informe de fase manda sobre tu criterio: si algo te parece incorrecto o
 incompleto, no lo cambies por tu cuenta — impleméntalo como está o párate y

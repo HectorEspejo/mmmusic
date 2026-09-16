@@ -16,6 +16,7 @@ pub enum Accion {
     Reescanear,
     EnviarScrobbles,
     RecargarTema,
+    EditarConfig,
     EnfocarBuscar,
     Abajo,
     Arriba,
@@ -80,6 +81,7 @@ pub fn traducir(tecla: &KeyEvent) -> Option<Accion> {
             'E' => Some(Accion::AlternarEcualizador),
             'c' => Some(Accion::AlternarCola),
             't' => Some(Accion::RecargarTema),
+            'S' => Some(Accion::EditarConfig),
             'j' => Some(Accion::Abajo),
             'k' => Some(Accion::Arriba),
             'h' => Some(Accion::Izquierda),
@@ -181,6 +183,10 @@ mod pruebas {
         assert_eq!(
             traducir(&tecla(KeyCode::Char('E'))),
             Some(Accion::AlternarEcualizador)
+        );
+        assert_eq!(
+            traducir(&tecla(KeyCode::Char('S'))),
+            Some(Accion::EditarConfig)
         );
         assert_eq!(traducir(&tecla(KeyCode::Char('?'))), Some(Accion::Ayuda));
     }

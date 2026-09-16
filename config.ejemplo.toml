@@ -25,7 +25,7 @@ caratulas = true
 # "nerd" usa iconos Nerd Font; "ascii" usa texto.
 iconos = "nerd"
 # Ancho de la barra lateral en columnas (entre 14 y 40).
-ancho_sidebar = 18
+ancho_sidebar = 20
 
 [tema]
 # "omarchy" lee ~/.config/omarchy/current/theme/alacritty.toml.

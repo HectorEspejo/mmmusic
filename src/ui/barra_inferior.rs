@@ -6,7 +6,9 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
 use crate::app::AppEstado;
 use crate::biblioteca::modelos::ElementoCola;
+use crate::config::ModoIconos;
 use crate::ecualizador::replaygain::ModoReplayGain;
+use crate::marca;
 use crate::reproductor::estado::{EstadoStream, Repeticion};
 use crate::ui::componentes::imagen;
 use crate::ui::formatear_ms;
@@ -26,9 +28,27 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
     }
     let compacto_ancho = area.width < ANCHO_COMPACTO;
     let estado = app.estado_reproductor.clone();
+    let linea_controles = controles(
+        app,
+        compacto_ancho,
+        indicador_scrobbling(app, compacto_ancho),
+    );
+    let ancho_controles = (linea_controles.width() as u16 + 3).min(interior.width / 2);
+
+    let Some(elemento) = &estado.elemento else {
+        dibujar_reposo(
+            frame,
+            app,
+            interior,
+            compacto,
+            linea_controles,
+            ancho_controles,
+        );
+        return;
+    };
     let es_emisora = estado.es_emisora();
-    let (titulo, subtitulo, album_id, ruta_imagen, id_logo) = match &estado.elemento {
-        Some(ElementoCola::Pista(pista)) => {
+    let (titulo, subtitulo, album_id, ruta_imagen, id_logo) = match elemento {
+        ElementoCola::Pista(pista) => {
             let titulo = if app.favoritas.contains(&pista.id) {
                 format!("{} {}", app.iconos.corazon, pista.titulo)
             } else {
@@ -42,22 +62,14 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
                 None,
             )
         }
-        Some(ElementoCola::Emisora(emisora)) => (
+        ElementoCola::Emisora(emisora) => (
             emisora.nombre.clone(),
             String::new(),
             None,
             emisora.logo_ruta.clone(),
             Some(emisora.id),
         ),
-        None => ("(detenido)".to_string(), String::new(), None, None, None),
     };
-
-    let linea_controles = controles(
-        app,
-        compacto_ancho,
-        indicador_scrobbling(app, compacto_ancho),
-    );
-    let ancho_controles = (linea_controles.width() as u16 + 3).min(interior.width / 2);
 
     if compacto {
         let [fila] = Layout::vertical([Constraint::Length(1)]).areas(interior);
@@ -197,6 +209,53 @@ pub fn dibujar(frame: &mut Frame, app: &mut AppEstado, area: Rect, compacto: boo
             Style::new().fg(app.paleta.secundario).bg(app.paleta.fondo),
         )),
         duracion,
+    );
+}
+
+fn dibujar_reposo(
+    frame: &mut Frame,
+    app: &AppEstado,
+    area: Rect,
+    compacto: bool,
+    controles: Line<'static>,
+    ancho_controles: u16,
+) {
+    let ascii = app.config.interfaz.iconos == ModoIconos::Ascii;
+    let estilo = Style::new().fg(app.paleta.texto).bg(app.paleta.fondo);
+    if compacto {
+        let [info, zona_controles] =
+            Layout::horizontal([Constraint::Min(5), Constraint::Length(ancho_controles)])
+                .areas(area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                marca::linea_reposo_sin_eslogan(info.width, ascii),
+                estilo,
+            ))),
+            info,
+        );
+        frame.render_widget(Paragraph::new(controles), zona_controles);
+        return;
+    }
+
+    let [fila_info, fila_onda] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+    let [info, zona_controles] =
+        Layout::horizontal([Constraint::Min(5), Constraint::Length(ancho_controles)])
+            .areas(fila_info);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            marca::linea_reposo(info.width, ascii),
+            estilo,
+        ))),
+        info,
+    );
+    frame.render_widget(Paragraph::new(controles), zona_controles);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            marca::onda(fila_onda.width, app.desplazamiento_onda(), ascii),
+            Style::new().fg(app.paleta.secundario).bg(app.paleta.fondo),
+        )),
+        fila_onda,
     );
 }
 

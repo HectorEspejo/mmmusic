@@ -2,7 +2,7 @@
 Type=Application
 Name=mmmusic
 GenericName=Reproductor de música
-Comment=Reproductor de música para terminal con MPRIS
+Comment=Reproductor de música para tu terminal
 Exec=mmmusic
 Terminal=true
 Categories=Audio;Music;Player;AudioVideo;

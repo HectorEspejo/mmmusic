@@ -37,26 +37,51 @@ fn dibujar_tarjetas(frame: &mut Frame, app: &mut AppEstado, interior: Rect) {
         dibujar_texto(frame, app, interior);
         return;
     }
+    let bloques: Vec<Vec<TarjetaInicio>> = (0..3)
+        .map(|indice_bloque| tarjetas_del_bloque(app, indice_bloque))
+        .collect();
+    let alturas: Vec<u16> = bloques
+        .iter()
+        .map(|tarjetas| {
+            if tarjetas.is_empty() {
+                2 // título + mensaje
+            } else {
+                1 + alto_tarjeta(app, ANCHO_TARJETA, interior.height)
+            }
+        })
+        .collect();
+    let primero = primer_bloque_visible(app, interior.height, &alturas);
     let mut y = interior.y;
-    for indice_bloque in 0..3 {
-        let tarjetas = tarjetas_del_bloque(app, indice_bloque);
-        let alto_bloque = if tarjetas.is_empty() {
-            2 // título + mensaje
-        } else {
-            1 + alto_tarjeta(app, ANCHO_TARJETA, interior.height)
-        };
+    for (indice_bloque, tarjetas) in bloques.iter().enumerate().skip(primero) {
         let disponible = interior.bottom().saturating_sub(y);
         if disponible < 2 {
             break;
         }
         let zona = Rect {
             y,
-            height: alto_bloque.min(disponible),
+            height: alturas[indice_bloque].min(disponible),
             ..interior
         };
-        dibujar_bloque(frame, app, zona, indice_bloque, &tarjetas);
+        dibujar_bloque(frame, app, zona, indice_bloque, tarjetas);
         y = zona.bottom() + 1; // una fila en blanco separa los bloques
     }
+}
+
+/// Índice del primer bloque que se dibuja para que el bloque enfocado quede a
+/// la vista: normalmente 0, y solo sube cuando los anteriores no caben junto a
+/// él.
+fn primer_bloque_visible(app: &AppEstado, alto: u16, alturas: &[u16]) -> usize {
+    let foco = app.bloque_inicio.min(alturas.len().saturating_sub(1));
+    let mut primero = foco;
+    while primero > 0 {
+        let candidato = primero - 1;
+        let total: u16 = alturas[candidato..=foco].iter().sum::<u16>() + (foco - candidato) as u16;
+        if total > alto {
+            break;
+        }
+        primero = candidato;
+    }
+    primero
 }
 
 fn dibujar_bloque(
@@ -489,6 +514,56 @@ mod pruebas {
         let segundo_titulo = fila("Añadidos recientemente").expect("segundo bloque");
         // Título + tarjeta de 11 filas + fila en blanco de separación.
         assert_eq!(segundo_titulo, primer_titulo + 13);
+    }
+
+    #[test]
+    fn el_bloque_enfocado_se_desplaza_a_la_vista() {
+        let mut app = app_con_caratula();
+        for indice in 1..=3 {
+            app.inicio.anadidos.push(AlbumResumen {
+                id: indice + 10,
+                titulo: format!("Álbum {indice}"),
+                artista: "Artista".to_string(),
+                anio: Some(2024),
+                caratula_ruta: None,
+                num_pistas: 1,
+                duracion_ms: 180_000,
+            });
+        }
+        app.inicio.redescubre.push(AlbumResumen {
+            id: 99,
+            titulo: "Reencontrado".to_string(),
+            artista: "Artista".to_string(),
+            anio: Some(2023),
+            caratula_ruta: None,
+            num_pistas: 1,
+            duracion_ms: 180_000,
+        });
+        // Alto insuficiente para los tres bloques completos.
+        app.tamano_terminal = (120, 26);
+        app.bloque_inicio = 2;
+        let backend = TestBackend::new(120, 26);
+        let mut terminal = Terminal::new(backend).expect("terminal de pruebas");
+        terminal
+            .draw(|frame| crate::ui::dibujar(frame, &mut app))
+            .expect("dibujar Inicio");
+
+        let buffer = terminal.backend().buffer();
+        let fila = |texto: &str| {
+            (0..buffer.area.height).find(|y| {
+                let linea: String = (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, *y)))
+                    .map(|celda| celda.symbol())
+                    .collect();
+                linea.contains(texto)
+            })
+        };
+        let titulo = fila("Redescubre").expect("bloque enfocado visible");
+        assert!(
+            titulo < 6,
+            "el bloque enfocado debe subir a la parte superior"
+        );
+        assert!(fila("Reencontrado").is_some(), "las tarjetas deben verse");
     }
 
     #[test]

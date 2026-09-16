@@ -7,6 +7,7 @@ pub mod credenciales;
 pub mod ecualizador;
 pub mod eventos;
 pub mod letras;
+pub mod marca;
 pub mod mpris;
 pub mod radio;
 pub mod red;
