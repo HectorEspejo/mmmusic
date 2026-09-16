@@ -16,7 +16,7 @@ use crate::biblioteca::modelos::{
     AlbumResumen, ArtistaResumen, DetalleAlbum, DetalleArtista, ElementoCola, EmisoraResumen,
     Inicio, PistaListado, PistaResumen, PlaylistResumen, PresetEq, TituloEmisora,
 };
-use crate::config::{Config, FuentePaleta, ModoIconos};
+use crate::config::{Config, ConfigVisuales, FuentePaleta, ModoIconos};
 use crate::ecualizador::ComandoEq;
 use crate::eventos::{AppEvento, EventoEscaneo, NivelAviso};
 use crate::letras::{
@@ -541,14 +541,19 @@ pub struct AppEstado {
     manejo_letras: Option<ManejoLetras>,
 }
 
+/// Ajustes de la visual Ciudad que vienen de la sección `[visuales]`.
+fn ajustes_ciudad(config: &ConfigVisuales) -> visuales::ciudad::AjustesCiudad {
+    visuales::ciudad::AjustesCiudad {
+        vuelta_s: config.ciudad_vuelta_s as f32,
+        filas: config.ciudad_filas as usize,
+        punteado: config.ciudad_punteado,
+    }
+}
+
 impl AppEstado {
     pub fn nuevo(config: Config, paleta: Paleta, total_pistas: i64, ruta_tema: PathBuf) -> Self {
         let iconos = Iconos::desde(config.interfaz.iconos);
-        let ajustes_ciudad = visuales::ciudad::AjustesCiudad {
-            vuelta_s: config.visuales.ciudad_vuelta_s as f32,
-            filas: config.visuales.ciudad_filas as usize,
-            punteado: config.visuales.ciudad_punteado,
-        };
+        let ajustes_ciudad = ajustes_ciudad(&config.visuales);
         let visuales =
             visuales::registro(config.interfaz.iconos == ModoIconos::Ascii, &ajustes_ciudad);
         let paleta_visual = PaletaVisual::desde_tema(&paleta);
@@ -4043,7 +4048,9 @@ impl AppEstado {
         let anterior = std::mem::replace(&mut self.config, carga.config);
         if self.config.interfaz.iconos != anterior.interfaz.iconos {
             self.iconos = Iconos::desde(self.config.interfaz.iconos);
-            self.visuales = visuales::registro(self.config.interfaz.iconos == ModoIconos::Ascii);
+            let ajustes = ajustes_ciudad(&self.config.visuales);
+            self.visuales =
+                visuales::registro(self.config.interfaz.iconos == ModoIconos::Ascii, &ajustes);
             self.indice_visual = self
                 .indice_visual
                 .min(self.visuales.len().saturating_sub(1));

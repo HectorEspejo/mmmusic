@@ -54,6 +54,12 @@ todavía por debajo del umbral de degradación a 15 fps.
    `ciudad.rs`, con `Default`) se construye en `app.rs` desde `config.visuales`.
    La firma cambia en sus dos únicos llamadores (`src/app.rs:545` y
    `tests/visuales.rs:63`). No se acopla `ciudad.rs` a `config.rs`.
+   **Seguimiento:** al integrar con la Fase 4a apareció un tercer llamador
+   (`AppEstado::recargar_config`, la recarga de `config.toml` en caliente que
+   reconstruye las visuales al cambiar de iconos), que seguía usando la firma
+   antigua y dejaba `main` sin compilar. Se arregla pasando los ajustes por un
+   único ayudante `ajustes_ciudad(&ConfigVisuales)` compartido por los dos sitios
+   de `app.rs`, para que no vuelvan a divergir.
 3. **Filas de historia: `ciudad_filas` actúa como tope.** El informe pide a la
    vez `F = clamp(alto/4, 8, 16)` y una clave `ciudad_filas` (8-16, por defecto
    12), sin decir cómo se combinan. Acordado con el desarrollador:
